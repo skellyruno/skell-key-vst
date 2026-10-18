@@ -1,0 +1,36 @@
+name: Build VST3 Plugin
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+
+    steps:
+    - name: Checkout repository recursively
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Configure CMake
+      run: >
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=Release
+        -DCSOUND_BUILD_STATIC=ON
+
+    - name: Build Plugin Target
+      run: cmake --build build --config Release
+
+    # Package build outputs as downloadable artifacts
+    - name: Upload Windows VST3 Artifact
+      if: runner.os == 'Windows'
+      uses: actions/upload-artifact@v4
+      with:
+        name: VST3-Windows
+        path: build/DelayPlugin_artefacts/Release/VST3/*.vst3
