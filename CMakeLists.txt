@@ -1,10 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
 project(TonicRecreation VERSION 0.1.0)
 # Configure with -DJUCE_PATH=/path/to/JUCE (JUCE 7+ recommended).
-if(NOT DEFINED JUCE_PATH)
-  message(FATAL_ERROR "Set JUCE_PATH to a local JUCE checkout")
-endif()
-add_subdirectory("${JUCE_PATH}" JUCE)
+include(FetchContent)
+
+FetchContent_Declare(
+    JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 8.0.12
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(JUCE)
 juce_add_plugin(TonicRecreation
     COMPANY_NAME "Independent Recreation"
     BUNDLE_ID "audio.independent.tonic-recreation"
