@@ -1,3 +1,4 @@
+#include <array>
 #include "PluginEditor.h"
 namespace {
 const char* sharpNames[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
@@ -43,17 +44,29 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
         if(processor.hasLiveInput())return;
         fileChooser=std::make_unique<juce::FileChooser>("Analyze audio",juce::File{},
                             "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
-        fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
-                                 juce::FileBrowserComponent::canSelectFiles,
-             [safe=juce::Component::SafePointer<TonicRecreationAudioProcessorEditor>(this)](const juce::FileChooser& chooser){
-                if(safe!=nullptr)safe->loadFile(chooser.getResult());
-             });
+        // Make the SafePointer from the editor, not from the lambda closure.
+        auto* editor = this;
+        juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safeEditor(editor);
+        constexpr int flags = juce::FileBrowserComponent::openMode |
+                              juce::FileBrowserComponent::canSelectFiles;
+        fileChooser->launchAsync(flags,
+            [safeEditor](const juce::FileChooser& chooser) {
+                if (safeEditor != nullptr)
+                    safeEditor->loadFile(chooser.getResult());
+            });
     };
     liveButton.onClick=[this]{processor.returnToLive();};
     fileStatus.setJustificationType(juce::Justification::centredLeft);
     fileStatus.setColour(juce::Label::textColourId,juce::Colour(0xffb1c9f1));
-    for(juce::Component* component:{static_cast<juce::Component*>(&title),&keyLabel,&subtitle,&candidatesLabel,&chordLabel,
-            &tuningLabel,&sensitivityLabel,&responseLabel,&bpmValue,&bpmCaption,&hostTempo,&bpmConfidenceLabel,&sensitivity,&response,&flats,&chords,&pauseButton,&resetButton,&fileStatus,&openFileButton,&liveButton})
+    // Explicit element type is required for mixed Label/Slider/Button pointers.
+    const std::array<juce::Component*, 21> components {{
+        &title, &keyLabel, &subtitle, &candidatesLabel, &chordLabel,
+        &tuningLabel, &sensitivityLabel, &responseLabel, &bpmValue,
+        &bpmCaption, &hostTempo, &bpmConfidenceLabel, &sensitivity,
+        &response, &flats, &chords, &pauseButton, &resetButton,
+        &fileStatus, &openFileButton, &liveButton
+    }};
+    for (auto* component : components)
         addAndMakeVisible(component);
     startTimerHz(6);timerCallback();
 }
