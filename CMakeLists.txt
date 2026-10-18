@@ -1,64 +1,29 @@
 cmake_minimum_required(VERSION 3.22)
-project(DelayPlugin VERSION 1.0.0 LANGUAGES C CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-include(FetchContent)
-FetchContent_Declare(
-    juce
-    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        8.0.0
-)
-FetchContent_MakeAvailable(juce)
-
-juce_add_plugin(DelayPlugin
-    COMPANY_NAME "MyAudioDev"
+project(TonicRecreation VERSION 0.1.0)
+# Configure with -DJUCE_PATH=/path/to/JUCE (JUCE 7+ recommended).
+if(NOT DEFINED JUCE_PATH)
+  message(FATAL_ERROR "Set JUCE_PATH to a local JUCE checkout")
+endif()
+add_subdirectory("${JUCE_PATH}" JUCE)
+juce_add_plugin(TonicRecreation
+    COMPANY_NAME "Independent Recreation"
+    BUNDLE_ID "audio.independent.tonic-recreation"
+    PLUGIN_MANUFACTURER_CODE InRc
+    PLUGIN_CODE TnRc
+    FORMATS VST3
+    PRODUCT_NAME "TONIC-inspired"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD TRUE
-    PLUGIN_MANUFACTURER_CODE Mydv
-    PLUGIN_CODE Dlay
-    FORMATS VST3 AU
-    PRODUCT_NAME "Custom Delay"
+    COPY_PLUGIN_AFTER_BUILD FALSE
 )
-
-juce_generate_juce_header(DelayPlugin)
-
-# FIX: Disable legacy VST2 preset compatibility in the VST3 wrapper
-target_compile_definitions(DelayPlugin
-    PRIVATE
-        JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_WEB_BROWSER=0
-        JUCE_USE_CURL=0
-)
-
-target_sources(DelayPlugin
-    PRIVATE
-        Source/PluginProcessor.h
-        Source/PluginProcessor.cpp
-        Source/PluginEditor.h
-        Source/PluginEditor.cpp
-        Source/SkellLookAndFeel.h
-        Source/SkellComponents.h
-)
-
-# Add BinaryData for assets
-juce_add_binary_data(DelayAssets
-    SOURCES
-        Source/Assets/skell_bg.png
-)
-
-target_link_libraries(DelayPlugin
-    PRIVATE
-        DelayAssets
-        juce::juce_audio_utils
-        juce::juce_dsp
-    PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
-)
+target_sources(TonicRecreation PRIVATE
+    Source/PluginProcessor.cpp Source/PluginProcessor.h
+    Source/PluginEditor.cpp Source/PluginEditor.h)
+target_compile_features(TonicRecreation PRIVATE cxx_std_17)
+target_link_libraries(TonicRecreation PRIVATE
+    juce::juce_audio_utils juce::juce_audio_processors
+    juce::juce_dsp juce::juce_gui_extra)
+target_compile_definitions(TonicRecreation PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
