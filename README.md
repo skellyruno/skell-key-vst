@@ -1,15 +1,17 @@
-# TONIC Recreation V17 - UI Layout Fix
+# TONIC-inspired V18 — Compact UI redesign
 
-Updated from V16. This version fixes overlapping chord/checkbox controls, knob alignment,
-footer file status clipping, progress-bar overlap, and corrupted special-symbol glyphs.
+Real implementation of the new dark-blue SKELL key-analyzer interface in JUCE C++.
 
-- Window size: 860 x 670 with separate key, tempo, automatic reference A, control,
-  and footer sections.
-- Reference A is detected automatically; there is no tuning knob.
-- Piano keyboard remains removed.
-- Existing DSP and drag-and-drop/file picker behavior are preserved.
-- Long file status text is abbreviated, with full text available by tooltip.
-- CMake and GitHub Actions are unchanged.
+- Editor: **650 x 485 px** (about **45.4% less window area** than 860 x 670 V17).
+- Vector-drawn cards, restrained blue highlights, waveform accents and revised typography.
+- Removed Unicode punctuation from UI strings to avoid the broken-character issue seen in Windows screenshots.
+- Existing real-time key, chord, BPM, auto Reference A, file-drop and DAW audio functions retained.
+- No piano keyboard; Reference A is a detector, not a knob.
+- Two adjustable knobs remain: Silence Gate and Responsiveness.
+- GitHub Actions workflow preserved.
 
-Replace your GitHub repository files with the archive contents and run Actions.
-Compilation in Windows/FL Studio has not been verified in this environment.
+## GitHub installation
+Replace your repository's files with the contents of this archive, commit to `main`, and run Actions > Build TONIC-inspired VST3.
+
+## Validation
+Code packaging and source checks done. A Windows JUCE compile and in-host visual test are still required. The design image is a visual reference, not an image stretched over the interface.
