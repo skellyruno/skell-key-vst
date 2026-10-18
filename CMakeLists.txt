@@ -21,6 +21,9 @@ juce_add_plugin(TonicRecreation
     IS_MIDI_EFFECT FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
+target_compile_definitions(TonicRecreation PUBLIC
+    JUCE_VST3_CAN_REPLACE_VST2=0
+)
 juce_generate_juce_header(TonicRecreation)
 target_sources(TonicRecreation PRIVATE
     Source/PluginProcessor.cpp Source/PluginProcessor.h
