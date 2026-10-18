@@ -1,36 +1,23 @@
-name: Build VST3 Plugin
-
+name: BuildVST3
 on:
   workflow_dispatch:
-
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
-
+  windows-vst3:
+    runs-on: windows-latest
     steps:
-    - name: Checkout repository recursively
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: Configure CMake
-      run: >
-        cmake -B build
-        -DCMAKE_BUILD_TYPE=Release
-        -DCSOUND_BUILD_STATIC=ON
-
-    - name: Build Plugin Target
-      run: cmake --build build --config Release
-
-    # Package build outputs as downloadable artifacts
-    - name: Upload Windows VST3 Artifact
-      if: runner.os == 'Windows'
-      uses: actions/upload-artifact@v4
-      with:
-        name: VST3-Windows
-        path: build/SkellKey_artefacts/Release/VST3/*.vst3
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Package VST3
+        shell: pwsh
+        run: |
+          $plugin = Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' | Select-Object -First 1
+          if (-not $plugin) { throw 'No VST3 bundle was produced' }
+          Compress-Archive -Path $plugin.FullName -DestinationPath TONIC-inspired-Windows-VST3.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TONIC-inspired-Windows-VST3
+          path: TONIC-inspired-Windows-VST3.zip
+          if-no-files-found: error
