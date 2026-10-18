@@ -150,3 +150,6 @@ void TonicRecreationAudioProcessor::getStateInformation(juce::MemoryBlock& dest)
 void TonicRecreationAudioProcessor::setStateInformation(const void* data,int size) {
     if(auto xml=getXmlFromBinary(data,size); xml && xml->hasTagName(state.state.getType())) state.replaceState(juce::ValueTree::fromXml(*xml));
 }
+
+// Required factory entry point for JUCE plugin wrappers.
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new TonicRecreationAudioProcessor(); }

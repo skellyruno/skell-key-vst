@@ -29,7 +29,9 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g){
     g.setColour(juce::Colour(0xff292b32)); g.fillRoundedRectangle(bounds,8.0f);
     auto circle=bounds.withSizeKeepingCentre(300,300).translated(0,-8);
     g.setColour(juce::Colour(0xff454b5c)); g.drawEllipse(circle,16.0f);
-    g.setColour(juce::Colour(0xff9db9ff)); g.drawArc(circle.reduced(2),-2.5f,2.1f,16.0f);
+    g.setColour(juce::Colour(0xff9db9ff)); juce::Path arc;
+    arc.addCentredArc(circle.getCentreX(), circle.getCentreY(), circle.getWidth()/2-2, circle.getHeight()/2-2, 0.0f, -2.5f, 2.1f, true);
+    g.strokePath(arc, juce::PathStrokeType(16.0f));
 }
 void TonicRecreationAudioProcessorEditor::resized(){
     auto r=getLocalBounds().reduced(28);

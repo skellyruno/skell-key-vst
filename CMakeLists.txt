@@ -1,16 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 project(TonicRecreation VERSION 0.1.0)
-# Configure with -DJUCE_PATH=/path/to/JUCE (JUCE 7+ recommended).
-include(FetchContent)
-
-FetchContent_Declare(
-    JUCE
-    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 8.0.12
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_MakeAvailable(JUCE)
+# JUCE can be supplied locally or fetched automatically on GitHub Actions.
+if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
+  add_subdirectory("${JUCE_PATH}" JUCE)
+else()
+  include(FetchContent)
+  FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git GIT_TAG 8.0.12 GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(JUCE)
+endif()
 juce_add_plugin(TonicRecreation
     COMPANY_NAME "Independent Recreation"
     BUNDLE_ID "audio.independent.tonic-recreation"
@@ -24,6 +21,7 @@ juce_add_plugin(TonicRecreation
     IS_MIDI_EFFECT FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
+juce_generate_juce_header(TonicRecreation)
 target_sources(TonicRecreation PRIVATE
     Source/PluginProcessor.cpp Source/PluginProcessor.h
     Source/PluginEditor.cpp Source/PluginEditor.h)
