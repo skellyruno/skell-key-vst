@@ -7,16 +7,14 @@ const char* chordKinds[]={"maj","min","dim","aug"};
 }
 TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor& p)
 : AudioProcessorEditor(&p),processor(p),
-  sensitivityAttachment(p.getState(),"sensitivity",sensitivity),
-  responseAttachment(p.getState(),"responsiveness",response),
   flatsAttachment(p.getState(),"preferFlats",flats),
   chordsAttachment(p.getState(),"chords",chords){
-    setSize(650,485);
+    setSize(570,340);
     title.setText("SKELL   |   KEY ANALYZER",juce::dontSendNotification);
     title.setColour(juce::Label::textColourId,juce::Colour(0xffa1adca));
     title.setFont(juce::Font(14.0f,juce::Font::bold));
     keyLabel.setJustificationType(juce::Justification::centred);
-    keyLabel.setFont(juce::Font(34.0f,juce::Font::bold));
+    keyLabel.setFont(juce::Font(29.0f,juce::Font::bold));
     keyLabel.setMinimumHorizontalScale(0.72f);
     subtitle.setJustificationType(juce::Justification::centred);
     subtitle.setFont(juce::Font(12.0f));
@@ -26,32 +24,15 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     chordLabel.setFont(juce::Font(12.0f));
     bpmCaption.setText("DETECTED TEMPO", juce::dontSendNotification);
     bpmCaption.setColour(juce::Label::textColourId,juce::Colour(0xffa1adca));
-    bpmValue.setFont(juce::Font(23.0f, juce::Font::bold));
+    bpmValue.setFont(juce::Font(21.0f, juce::Font::bold));
     bpmValue.setColour(juce::Label::textColourId,juce::Colour(0xff92afff));
-    hostTempo.setColour(juce::Label::textColourId,juce::Colour(0xffd0d7e8));
-    bpmConfidenceLabel.setColour(juce::Label::textColourId,juce::Colour(0xffd0d7e8));
     tuningLabel.setText("AUTO A REF: Listening...",juce::dontSendNotification);
     tuningLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     tuningLabel.setMinimumHorizontalScale(0.75f);
-    sensitivityLabel.setText("SILENCE GATE",juce::dontSendNotification);
-    sensitivityLabel.setFont(juce::Font(10.0f,juce::Font::bold));
-    responseLabel.setText("RESPONSIVENESS",juce::dontSendNotification);
-    responseLabel.setFont(juce::Font(10.0f,juce::Font::bold));
-    for(auto* label:{&subtitle,&candidatesLabel,&chordLabel,&tuningLabel,&sensitivityLabel,&responseLabel})
-        label->setColour(juce::Label::textColourId,juce::Colour(0xffd0d7e8));
-    for(auto* label: {&sensitivityLabel, &responseLabel, &tuningLabel})
-        label->setJustificationType(juce::Justification::centred);
-    for(auto* slider:{&sensitivity,&response}){
-        slider->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-        slider->setTextBoxStyle(juce::Slider::TextBoxBelow,false,62,19);
-        slider->setColour(juce::Slider::rotarySliderOutlineColourId,juce::Colour(0xff3c4762));
-        slider->setColour(juce::Slider::thumbColourId,juce::Colour(0xffadc7ff));
-        slider->setColour(juce::Slider::textBoxTextColourId,juce::Colour(0xffe6ecfa));
-        slider->setColour(juce::Slider::textBoxOutlineColourId,juce::Colours::transparentBlack);
-        slider->setColour(juce::Slider::textBoxBackgroundColourId,juce::Colour(0xff1b2130));
-        slider->setColour(juce::Slider::rotarySliderFillColourId,juce::Colour(0xff92afff));
-    }
-    flats.setButtonText("Flats"); chords.setButtonText("Chords");pauseButton.setButtonText("Pause");
+    for (auto* label : {&subtitle, &candidatesLabel, &chordLabel, &tuningLabel})
+        label->setColour(juce::Label::textColourId, juce::Colour(0xffd0d7e8));
+    tuningLabel.setJustificationType(juce::Justification::centred);
+    pauseButton.setButtonText("Pause");
     pauseButton.setClickingTogglesState(true);
     pauseButton.onClick=[this]{processor.setPaused(pauseButton.getToggleState());};
     resetButton.onClick=[this]{if(processor.isOfflineMode())processor.returnToLive();else processor.requestReset();};
@@ -75,16 +56,13 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     fileStatus.setFont(juce::Font(10.0f));
     fileStatus.setMinimumHorizontalScale(0.85f);
     fileStatus.setColour(juce::Label::textColourId,juce::Colour(0xffb1c9f1));
-    // Explicit element type is required for mixed Label/Slider/Button pointers.
-    const std::array<juce::Component*, 21> components {{
+    const std::array<juce::Component*, 12> components {{
         &title, &keyLabel, &subtitle, &candidatesLabel, &chordLabel,
-        &tuningLabel, &sensitivityLabel, &responseLabel, &bpmValue,
-        &bpmCaption, &hostTempo, &bpmConfidenceLabel, &sensitivity,
-        &response, &flats, &chords, &pauseButton, &resetButton,
-        &fileStatus, &openFileButton, &liveButton
+        &tuningLabel, &bpmValue, &bpmCaption, &pauseButton, &resetButton,
+        &fileStatus, &openFileButton
     }};
-    for (auto* component : components)
-        addAndMakeVisible(component);
+    for (auto* component : components) addAndMakeVisible(component);
+    addAndMakeVisible(liveButton);
     resetButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff313e50));
     openFileButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff34435d));
     liveButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff24416c));
@@ -110,7 +88,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback(){
     else status="NO INPUT  |  Drop audio anywhere or use Open Audio";
     fileStatus.setTooltip(status);
     // Keep long filenames on one line: the complete name is in the tooltip.
-    if (status.length() > 49) status = status.substring(0, 46) + "...";
+    if (status.length() > 37) status = status.substring(0, 34) + "...";
     fileStatus.setText(status,juce::dontSendNotification);
     if(offline && processor.isFileBusy())repaint();
     const auto* names=flats.getToggleState()?flatNames:sharpNames;
@@ -128,7 +106,8 @@ void TonicRecreationAudioProcessorEditor::timerCallback(){
     }
     candidatesLabel.setText(root<0?"Waiting for audio...":ranked,juce::dontSendNotification);
     const int cr=processor.getChordRoot(),ck=processor.getChordKind();
-    chordLabel.setVisible(chords.getToggleState());
+    // Keep the detector visible even though the old Chords toggle is hidden.
+    chordLabel.setVisible(true);
     chordLabel.setText(cr<0||ck<0?"Not confident enough":""+juce::String(names[cr])+" "+chordKinds[ck]+"   (experimental)",juce::dontSendNotification);
     const float aHz=processor.getDetectedTuningHz();
     const float aConf=processor.getTuningConfidence();
@@ -139,108 +118,73 @@ void TonicRecreationAudioProcessorEditor::timerCallback(){
     const float detected = processor.getDetectedBpm();
     const float beatConfidence = processor.getBpmConfidence();
     bpmValue.setText(detected > 0.0f ? juce::String(detected, 1) + " BPM" : "-- BPM", juce::dontSendNotification);
-    bpmConfidenceLabel.setText(detected > 0.0f ? "Confidence  " + juce::String(juce::roundToInt(beatConfidence*100)) + "%" : "Listening for rhythm (8s+)", juce::dontSendNotification);
-    if(!offline && processor.hasHostBpm()) {
-        const float host=processor.getHostBpm();
-        hostTempo.setText("DAW " + juce::String(host,1) + " BPM" +
-            (detected > 0.0f ? "     Difference " + juce::String(detected-host,1) : ""),juce::dontSendNotification);
-    } else hostTempo.setText("DAW tempo unavailable",juce::dontSendNotification);
+    // Host tempo and BPM confidence remain internal to the engine; no DAW tempo panel.
+
 }
 void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
-    const auto background = juce::Colour(0xff0b1422);
-    const auto panel = juce::Colour(0xff152338);
-    const auto stroke = juce::Colour(0xff354b6c);
-    const auto blue = juce::Colour(0xff6da8ff);
+    const auto background=juce::Colour(0xff0b1422);
+    const auto panel=juce::Colour(0xff152338);
+    const auto stroke=juce::Colour(0xff354b6c);
+    const auto blue=juce::Colour(0xff6da8ff);
     g.fillAll(background);
-
-    // The compact V18 layout is independent of the decorative concept mockup.
-    // It is drawn with JUCE vectors, rather than embedding a non-interactive image.
-    auto box = [&](float x, float y, float w, float h, float radius=10.0f) {
+    auto box=[&](float x,float y,float w,float h,float radius=9.0f){
         juce::Rectangle<float> r(x,y,w,h);
-        g.setColour(panel); g.fillRoundedRectangle(r,radius);
-        g.setColour(stroke); g.drawRoundedRectangle(r,radius,0.8f);
+        g.setColour(panel);g.fillRoundedRectangle(r,radius);
+        g.setColour(stroke);g.drawRoundedRectangle(r,radius,0.8f);
     };
     g.setColour(juce::Colour(0xff101b2c));
-    g.fillRoundedRectangle(juce::Rectangle<float>(7,7,636,471),13.0f);
-    g.setColour(stroke);
-    g.drawRoundedRectangle(juce::Rectangle<float>(7,7,636,471),13.0f,1.0f);
-
-    // Signature audio bars and a thin accent rule distinguish the new design.
-    for (int i=0;i<5;++i) {
-        const float h=9.0f + (i==2?12.0f:(i==1||i==3?7.0f:0.0f));
-        g.setColour(blue.withAlpha(0.65f + 0.07f*i));
-        g.fillRoundedRectangle(juce::Rectangle<float>(23.0f+i*5.0f,33.0f-h/2.0f,2.5f,h),1.2f);
+    g.fillRoundedRectangle(juce::Rectangle<float>(6,6,558,328),12.0f);
+    g.setColour(stroke);g.drawRoundedRectangle(juce::Rectangle<float>(6,6,558,328),12.0f,1.0f);
+    for(int i=0;i<5;++i){
+        const float h=8.0f+(i==2?11.0f:(i==1||i==3?6.0f:0.0f));
+        g.setColour(blue.withAlpha(0.65f+0.07f*i));
+        g.fillRoundedRectangle(juce::Rectangle<float>(19.0f+i*5.0f,26.0f-h/2.0f,2.5f,h),1.2f);
     }
-    g.setColour(juce::Colour(0xff31445f));
-    g.drawLine(16.0f,59.0f,634.0f,59.0f,1.0f);
-    g.setColour(blue);
-    g.fillRoundedRectangle(juce::Rectangle<float>(16,58,106,2),1.0f);
-
-    box(16,67,618,188,12.0f);
+    g.setColour(stroke);g.drawLine(14.0f,50.0f,556.0f,50.0f,1.0f);
+    g.setColour(blue);g.fillRoundedRectangle(juce::Rectangle<float>(14,49,93,2),1.0f);
+    box(14,57,542,145,11.0f);
     g.setColour(juce::Colour(0xffa9c2e8));
-    g.setFont(juce::Font(10.0f,juce::Font::bold));
-    g.drawText("DETECTED KEY",juce::Rectangle<int>(45,78,560,17),juce::Justification::centred);
-    for (int side=0;side<2;++side) {
-        for(int i=0;i<11;++i) {
-            const float h=(i%5==2?27.0f:(i%3==0?17.0f:8.0f));
-            const float x=side==0?84.0f+i*7.0f:566.0f-i*7.0f;
-            g.setColour(blue.withAlpha(0.09f+0.045f*(11-i)/11.0f));
-            g.fillRoundedRectangle(juce::Rectangle<float>(x,127-h*0.5f,2.0f,h),1.0f);
-        }
+    g.setFont(juce::Font(9.5f,juce::Font::bold));
+    g.drawText("DETECTED KEY",juce::Rectangle<int>(30,63,510,15),juce::Justification::centred);
+    for(int side=0;side<2;++side)for(int i=0;i<9;++i){
+        const float h=(i%4==2?22.0f:(i%3==0?15.0f:7.0f));
+        const float x=side==0?72.0f+i*6.0f:498.0f-i*6.0f;
+        g.setColour(blue.withAlpha(0.08f+0.05f*(9-i)/9.0f));
+        g.fillRoundedRectangle(juce::Rectangle<float>(x,104-h*0.5f,2.0f,h),1.0f);
     }
-    g.setColour(stroke);
-    g.drawLine(332.0f,185.0f,332.0f,217.0f,0.8f);
-    g.drawLine(160.0f,224.0f,490.0f,224.0f,0.8f);
-
-    box(16,263,618,71);
-    g.setColour(stroke); g.drawLine(253.0f,276.0f,253.0f,320.0f,1.0f);
-    box(16,342,258,91);
-    box(282,342,171,91);
-    box(461,342,173,91);
+    g.setColour(stroke);g.drawLine(285.0f,165.0f,285.0f,193.0f,0.8f);
+    box(14,209,542,66);
+    g.setColour(stroke);g.drawLine(215.0f,220.0f,215.0f,264.0f,1.0f);
+    box(14,282,542,25);
+    g.setColour(juce::Colour(0xffa9c2e8));g.setFont(juce::Font(9.5f,juce::Font::bold));
+    g.drawText("AUTO A REF",juce::Rectangle<int>(22,285,95,17),juce::Justification::centredLeft);
     g.setColour(juce::Colour(0xff0d1828));
-    g.fillRoundedRectangle(juce::Rectangle<float>(16,441,618,31),7.0f);
-    g.setColour(stroke);
-    g.drawRoundedRectangle(juce::Rectangle<float>(16,441,618,31),7.0f,0.8f);
-
-    if(processor.isOfflineMode()) {
+    g.fillRoundedRectangle(juce::Rectangle<float>(14,313,542,21),6.0f);
+    if(processor.isOfflineMode()){
         const float progress=juce::jlimit(0.0f,1.0f,processor.getFileProgress());
-        g.setColour(blue);
-        g.fillRoundedRectangle(juce::Rectangle<float>(18,438,614*progress,2),1.0f);
+        g.setColour(blue);g.fillRoundedRectangle(juce::Rectangle<float>(16,310,538*progress,2),1.0f);
     }
-    if(dragHover) {
+    if(dragHover){
         g.setColour(juce::Colour(0x99518bd2));
-        g.fillRoundedRectangle(juce::Rectangle<float>(9,9,632,467),11.0f);
-        g.setColour(juce::Colours::white);
-        g.setFont(juce::Font(24.0f,juce::Font::bold));
-        g.drawText("DROP AUDIO TO ANALYZE",getLocalBounds().reduced(40),juce::Justification::centred);
+        g.fillRoundedRectangle(juce::Rectangle<float>(8,8,554,324),10.0f);
+        g.setColour(juce::Colours::white);g.setFont(juce::Font(20.0f,juce::Font::bold));
+        g.drawText("DROP AUDIO TO ANALYZE",getLocalBounds().reduced(30),juce::Justification::centred);
     }
 }
-void TonicRecreationAudioProcessorEditor::resized() {
-    title.setBounds(56,20,360,30);
-    pauseButton.setBounds(479,21,79,28);
-    resetButton.setBounds(558,19,68,30);
-
-    keyLabel.setBounds(104,100,442,49);
-    subtitle.setBounds(107,150,436,22);
-    candidatesLabel.setBounds(29,189,288,25);
-    chordLabel.setBounds(343,189,274,25);
-    flats.setBounds(230,226,90,25);
-    chords.setBounds(337,226,99,25);
-
-    bpmCaption.setBounds(30,269,205,18);
-    bpmValue.setBounds(30,287,210,37);
-    hostTempo.setBounds(269,273,340,24);
-    bpmConfidenceLabel.setBounds(269,297,340,25);
-
-    tuningLabel.setBounds(25,351,240,72);
-    sensitivityLabel.setBounds(286,347,161,18);
-    responseLabel.setBounds(464,347,165,18);
-    sensitivity.setBounds(319,361,96,66);
-    response.setBounds(500,361,94,66);
-
-    fileStatus.setBounds(26,445,378,22);
-    openFileButton.setBounds(409,445,118,23);
-    liveButton.setBounds(532,445,92,23);
+void TonicRecreationAudioProcessorEditor::resized(){
+    title.setBounds(48,13,315,28);
+    pauseButton.setBounds(407,11,75,30);
+    resetButton.setBounds(488,11,65,29);
+    keyLabel.setBounds(70,85,430,44);
+    subtitle.setBounds(90,129,390,20);
+    candidatesLabel.setBounds(20,164,255,26);
+    chordLabel.setBounds(296,164,250,26);
+    bpmCaption.setBounds(26,215,185,18);
+    bpmValue.setBounds(26,236,185,30);
+    tuningLabel.setBounds(120,281,415,26);
+    fileStatus.setBounds(21,313,305,19);
+    openFileButton.setBounds(335,313,125,20);
+    liveButton.setBounds(465,313,87,20);
 }
 
 namespace {

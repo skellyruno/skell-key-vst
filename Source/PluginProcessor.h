@@ -111,6 +111,7 @@ private:
     std::array<int,60*3> noteBins {};
     std::array<float,60> noteFrequencies {};
     int tempoHopSamples=441;
+    float actualOnsetRate=100.0f;
     void rebuildFrequencyMap(double sampleRate);
     std::array<float,windowSize> hannWindow {};
     std::array<float,12> chordMemory {};

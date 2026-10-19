@@ -59,6 +59,9 @@ void TonicRecreationAudioProcessor::prepareToPlay(double rate,int){
 void TonicRecreationAudioProcessor::rebuildFrequencyMap(double sampleRate){
     analysisSampleRate=std::max(1.0,sampleRate);
     tempoHopSamples=std::max(1,juce::roundToInt(analysisSampleRate/onsetHopRate));
+    // Using the measured novelty-envelope rate avoids tempo drift when the
+    // sample rate is not an exact multiple of 100 Hz.
+    actualOnsetRate=static_cast<float>(analysisSampleRate/tempoHopSamples);
     for(int midi=36;midi<=95;++midi){
         const int index=midi-36;
         const float frequency=440.0f*std::pow(2.0f,(midi-69)/12.0f);
@@ -263,7 +266,7 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
     onsetWrite = (onsetWrite + 1) % onsetHistoryLength;
     onsetCount = std::min(onsetCount + 1, onsetHistoryLength);
     onsetSamples = 0; onsetEnergySum = 0.0f;
-    if (++bpmAnalysisFrames >= 100) {
+    if (++bpmAnalysisFrames >= 150) {
         bpmAnalysisFrames = 0;
         estimateTempo();
     }
@@ -288,22 +291,30 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     // One normalized autocorrelation pass for the entire 40-240 BPM search space.
     // A beat hypothesis receives evidence from its half/double time neighbors;
     // this reduces common octave errors but cannot resolve fundamentally ambiguous rhythms.
-    std::array<float,151> corr {};
-    for(int lag=25;lag<=150;++lag){
-        float cross=0,e1=0,e2=0;
-        for(int i=lag;i<count;++i){
-            const float x=envelope[(size_t)i], y=envelope[(size_t)(i-lag)];
-            cross+=x*y;e1+=x*x;e2+=y*y;
-        }
+    // Prefix energy sums avoid recomputing both autocorrelation denominators
+    // for every lag. Only the cross term needs an inner product.
+    std::array<float,length+1> energyPrefix {};
+    for(int i=0;i<count;++i)
+        energyPrefix[(size_t)i+1]=energyPrefix[(size_t)i]+envelope[(size_t)i]*envelope[(size_t)i];
+    std::array<float,361> corr {};
+    // Autocorrelation lag is computed from the *actual* envelope sample rate.
+    const int minLag=juce::jlimit(1, 359, juce::roundToInt(60.0f*actualOnsetRate/240.0f));
+    const int maxLag=juce::jlimit(minLag, 359, juce::roundToInt(60.0f*actualOnsetRate/40.0f));
+    for(int lag=minLag;lag<=maxLag;++lag){
+        float cross=0;
+        for(int i=lag;i<count;++i)
+            cross+=envelope[(size_t)i]*envelope[(size_t)(i-lag)];
+        const float e1=energyPrefix[(size_t)count]-energyPrefix[(size_t)lag];
+        const float e2=energyPrefix[(size_t)(count-lag)];
         if(e1>1e-8f && e2>1e-8f) corr[(size_t)lag]=cross/std::sqrt(e1*e2);
     }
     float best=-1.0f, second=-1.0f;int bestLag=0;
     const float host=hostBpmValid.load()?hostBpm.load():0.0f;
-    for(int lag=25;lag<=150;++lag){
-        const float bpm=6000.0f/lag;
+    for(int lag=minLag;lag<=maxLag;++lag){
+        const float bpm=60.0f*actualOnsetRate/lag;
         float score=corr[(size_t)lag];
-        if(lag*2<=150)score+=0.30f*corr[(size_t)(lag*2)];
-        if(lag/2>=25 && lag%2==0)score+=0.12f*corr[(size_t)(lag/2)];
+        if(lag*2<=maxLag)score+=0.30f*corr[(size_t)(lag*2)];
+        if(lag/2>=minLag && lag%2==0)score+=0.12f*corr[(size_t)(lag/2)];
         // A small prior makes pulse interpretations near conventional beat rates more stable.
         score*=0.92f+0.08f*std::exp(-0.5f*std::pow(std::log2(bpm/115.0f)/0.9f,2));
         if(lastStableBpm>0.0f && std::abs(std::log2(bpm/lastStableBpm))<0.10f)score*=1.06f;
@@ -312,12 +323,21 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         else if(score>second)second=score;
     }
     if(bestLag==0 || corr[(size_t)bestLag]<0.18f){detectedBpm.store(0);bpmConfidence.store(0);return;}
-    const float bpm=6000.0f/bestLag;
+    const float bpm=60.0f*actualOnsetRate/bestLag;
     const int halfLag=bestLag*2, doubleLag=bestLag/2;
-    const float half=halfLag<=150?corr[(size_t)halfLag]:0.0f;
-    const float dbl=doubleLag>=25?corr[(size_t)doubleLag]:0.0f;
+    const float half=halfLag<=maxLag?corr[(size_t)halfLag]:0.0f;
+    const float dbl=doubleLag>=minLag?corr[(size_t)doubleLag]:0.0f;
     tempoAmbiguity=juce::jlimit(0.0f,1.0f,std::max(half,dbl)/std::max(0.01f,corr[(size_t)bestLag]));
     const float conf=juce::jlimit(0.0f,1.0f,(corr[(size_t)bestLag]-0.15f)/0.60f)*(1.0f-0.30f*tempoAmbiguity);
+    // Ignore a single sudden octave jump when pulse evidence is ambiguous.
+    const bool octaveJump = lastStableBpm > 0.0f &&
+        (std::abs(bpm / lastStableBpm - 2.0f) < 0.10f ||
+         std::abs(bpm / lastStableBpm - 0.5f) < 0.05f);
+    if(octaveJump && tempoAmbiguity.load() > 0.72f) {
+        bpmConfidence.store(conf * 0.5f);
+        detectedBpm.store(lastStableBpm);
+        return;
+    }
     if(lastStableBpm==0.0f || std::abs(bpm-lastStableBpm)>8.0f)lastStableBpm=bpm;
     else lastStableBpm=0.75f*lastStableBpm+0.25f*bpm;
     detectedBpm.store(lastStableBpm);bpmConfidence.store(conf);
@@ -352,6 +372,9 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     std::array<float,12> c{};
     float tuningWeighted=0,tuningWeight=0,tuningWeightSquared=0;
     int tuningPeakCount=0;
+    // Multiple note hypotheses can land on the same FFT peak. Count each
+    // spectral peak only once to avoid biased A-reference estimates.
+    std::array<unsigned char,N/2> visitedTuningBins {};
     for(int midi=36;midi<=95;++midi){
         const float f=noteFrequencies[(size_t)(midi-36)];
         float fundamental=0,score=0;
@@ -368,7 +391,10 @@ void TonicRecreationAudioProcessor::analyseWindow(){
             const float magnitude=std::sqrt(best);
             if(h==1){fundamental=magnitude;
                 // Only high-resolution notes make useful FFT-bin tuning measurements.
-                if(bin>70 && bestBin>1 && bestBin<N/2-2 && magnitude>0.01f){
+                if(bin>70 && bestBin>1 && bestBin<N/2-2 && magnitude>0.01f
+                   && !visitedTuningBins[(size_t)bestBin]
+                   && spectrumPower[(size_t)bestBin] > spectrumPower[(size_t)(bestBin-1)]
+                   && spectrumPower[(size_t)bestBin] >= spectrumPower[(size_t)(bestBin+1)]){
                     // Three-point parabolic interpolation of LOG spectral magnitudes.
                     // Sub-bin frequency estimation is much less quantized than bestBin alone.
                     auto logMag=[&](int k){
@@ -379,6 +405,7 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                     const float delta=std::abs(denom)>1.0e-6f?juce::jlimit(-0.5f,0.5f,0.5f*(left-right)/denom):0.0f;
                     const float cents=1200.0f*std::log2(float((bestBin+delta)*analysisSampleRate/N)/f);
                     if(std::abs(cents)<30){
+                        visitedTuningBins[(size_t)bestBin]=1;
                         // Avoid counting weak leakage bins as tuning observations.
                         const float weight=std::min(magnitude,100.0f);
                         tuningWeighted+=cents*weight;tuningWeight+=weight;
@@ -411,7 +438,8 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     std::array<Candidate,24> ranking{};int ix=0;
     for(int root=0;root<12;++root)for(int mode=0;mode<2;++mode)
         ranking[(size_t)ix++]={correlation(chromaMemory,root,mode==0?majorProfile:minorProfile),root,mode};
-    std::sort(ranking.begin(),ranking.end(),[](const auto& a,const auto& b){return a.score>b.score;});
+    std::partial_sort(ranking.begin(),ranking.begin()+3,ranking.end(),
+        [](const auto& a,const auto& b){return a.score>b.score;});
     for(int i=0;i<3;++i){candidateRoots[(size_t)i].store(ranking[(size_t)i].root);candidateModes[(size_t)i].store(ranking[(size_t)i].mode);candidateScores[(size_t)i].store(ranking[(size_t)i].score);}
     const auto& best=ranking[0];
     if(best.root==pendingRoot&&best.mode==pendingMode)++pendingCount;
@@ -427,18 +455,22 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     struct ChordScore {float value;int root,kind;};
     std::array<ChordScore,48> scores{};
     int index=0;
+    // The chroma vector is normalized; an out-of-chord scan is unnecessary.
+    // Compute the three chord tones directly, then derive outside energy.
+    const float chromaTotal=std::accumulate(chordMemory.begin(),chordMemory.end(),0.0f);
     const auto top=std::max_element(chordMemory.begin(),chordMemory.end());
     const float peak=*top;
     for(int root=0;root<12;++root)for(int kind=0;kind<4;++kind){
-        float inside=0,outside=0,minimum=1.0f;
-        for(int note=0;note<12;++note){
-            bool present=false;for(int j=0;j<3;++j)present|=(note==(root+intervals[kind][j])%12);
-            const float v=chordMemory[(size_t)note];
-            if(present){inside+=v;minimum=std::min(minimum,v);}else outside+=v;
-        }
+        const float a=chordMemory[(size_t)((root+intervals[kind][0])%12)];
+        const float b=chordMemory[(size_t)((root+intervals[kind][1])%12)];
+        const float c3=chordMemory[(size_t)((root+intervals[kind][2])%12)];
+        const float inside=a+b+c3;
+        const float minimum=std::min(a,std::min(b,c3));
+        const float outside=std::max(0.0f,chromaTotal-inside);
         scores[(size_t)index++]={inside-0.70f*outside+0.35f*minimum,root,kind};
     }
-    std::sort(scores.begin(),scores.end(),[](const auto& a,const auto& b){return a.value>b.value;});
+    std::partial_sort(scores.begin(),scores.begin()+2,scores.end(),
+        [](const auto& a,const auto& b){return a.value>b.value;});
     const auto& winner=scores[0];
     const float margin=winner.value-scores[1].value;
     const float cc=juce::jlimit(0.0f,1.0f,margin*7.0f);

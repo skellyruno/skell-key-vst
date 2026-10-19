@@ -15,16 +15,14 @@ public:
 private:
     void timerCallback() override;
     TonicRecreationAudioProcessor& processor;
-    juce::Label title, keyLabel, subtitle, candidatesLabel, chordLabel, tuningLabel, sensitivityLabel, responseLabel;
-    juce::Label bpmValue, bpmCaption, hostTempo, bpmConfidenceLabel, fileStatus;
+    juce::Label title, keyLabel, subtitle, candidatesLabel, chordLabel, tuningLabel;
+    juce::Label bpmValue, bpmCaption, fileStatus;
     juce::ToggleButton pauseButton, flats, chords;
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
     std::unique_ptr<juce::FileChooser> fileChooser;
     bool dragHover=false;
     void loadFile(const juce::File&);
     juce::TextButton resetButton {"Reset"};
-    juce::Slider sensitivity, response;
-    juce::AudioProcessorValueTreeState::SliderAttachment sensitivityAttachment, responseAttachment;
     juce::AudioProcessorValueTreeState::ButtonAttachment flatsAttachment, chordsAttachment;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TonicRecreationAudioProcessorEditor)
 };
