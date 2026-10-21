@@ -44,6 +44,7 @@ void TonicRecreationAudioProcessor::resetAnalysis(){
     detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0;
     onsetHistory.fill(0); onsetWrite=onsetCount=onsetSamples=bpmAnalysisFrames=0;
     onsetEnergySum=previousEnergy=smoothedOnset=0;
+    tempoSilentHops=0;
     for(auto& v:liveChroma)v.store(0);
     for(int i=0;i<3;++i){candidateRoots[(size_t)i].store(-1);candidateModes[(size_t)i].store(2);candidateScores[(size_t)i].store(0);}
 }
@@ -93,8 +94,8 @@ void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
         } else hostBpmValid.store(false,std::memory_order_relaxed);
     } else hostBpmValid.store(false,std::memory_order_relaxed);
     // No mutex, disk access, or heap allocation in the audio callback.
-    // A signal is considered present once a block exceeds the threshold; sustained
-    // silence clears the flag, making drag-and-drop available again.
+    // Live-input activity is informational only. Explicit file requests always
+    // take priority, regardless of whether the DAW currently has audio.
     const int channels = buffer.getNumChannels(), count = buffer.getNumSamples();
     if(channels > 0 && count > 0) {
         float peak = 0.0f;
@@ -109,14 +110,29 @@ void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
     int start1=0,size1=0,start2=0,size2=0;
     // Never waits for analysis and never allocates memory on the audio thread.
     sampleFifo.prepareToWrite(count,start1,size1,start2,size2);
-    auto copy=[&](int dest,int from,int n){for(int i=0;i<n;++i){float s=0;for(int c=0;c<channels;++c)s+=buffer.getReadPointer(c)[from+i];sampleQueue[(size_t)(dest+i)]=s/float(channels);}};
-    copy(start1,0,size1);copy(start2,size1,size2);
+    // Fetch channel pointers once per callback, not for every captured sample.
+    // Valid channel layouts are mono and stereo (see isBusesLayoutSupported).
+    const float* const left = buffer.getReadPointer(0);
+    const float* const right = channels > 1 ? buffer.getReadPointer(1) : nullptr;
+    auto copy = [&](int destination, int offset, int length) {
+        if (right != nullptr) {
+            for (int i = 0; i < length; ++i)
+                sampleQueue[(size_t)(destination + i)] =
+                    0.5f * (left[offset + i] + right[offset + i]);
+        } else {
+            for (int i = 0; i < length; ++i)
+                sampleQueue[(size_t)(destination + i)] = left[offset + i];
+        }
+    };
+    copy(start1, 0, size1);
+    copy(start2, size1, size2);
     sampleFifo.finishedWrite(size1+size2);
     if(size1+size2>0)analysisReady.signal();
     // Transparent analyzer; audio is left untouched.
 }
 bool TonicRecreationAudioProcessor::requestFileAnalysis(const juce::File& file) {
-    if (!file.existsAsFile() || hasLiveInput()) return false;
+    // Explicit file selection overrides active DAW input without touching the audio callback.
+    if (!file.existsAsFile()) return false;
     const auto extension = file.getFileExtension().toLowerCase();
     if (!juce::StringArray {".wav", ".aiff", ".aif", ".flac", ".ogg", ".mp3"}.contains(extension))
         return false;
@@ -161,7 +177,7 @@ void TonicRecreationAudioProcessor::discardLiveQueue(){
 void TonicRecreationAudioProcessor::analyseAudioSample(float sample){
     consumeTempoSample(sample);
     history[(size_t)historyWrite]=sample;
-    historyWrite=(historyWrite+1)%windowSize;
+    historyWrite=(historyWrite+1)&(windowSize-1);
     historyCount=std::min(windowSize,historyCount+1);
     if(historyCount==windowSize && ++samplesSinceWindow>=hopSize){
         samplesSinceWindow=0;analyseWindow();
@@ -173,7 +189,7 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
     formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(juce::File(path)));
     if (generation != fileRequestGeneration.load(std::memory_order_acquire)) return;
-    if (!reader || reader->sampleRate <= 0.0 || reader->numChannels==0) {
+    if (!reader || reader->sampleRate <= 0.0 || reader->numChannels==0 || reader->lengthInSamples<=0) {
         if (generation == fileRequestGeneration.load()) { fileError.store(true); fileBusy.store(false); }
         return;
     }
@@ -190,12 +206,28 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
            generation != fileRequestGeneration.load(std::memory_order_acquire))break;
         const int n=static_cast<int>(std::min<juce::int64>(blockSize,total-offset));
         decoded.clear();
-        if(!reader->read(&decoded,0,n,offset,true,true)){fileError.store(true);break;}
+        if(!reader->read(&decoded,0,n,offset,true,true)) {
+            // Only the active request may publish a read failure.
+            if (generation == fileRequestGeneration.load(std::memory_order_acquire))
+                fileError.store(true, std::memory_order_release);
+            break;
+        }
         for(int i=0;i<n;++i){
+            // Check regularly inside decoded blocks: a new drop or Live Input
+            // must preempt the currently running analysis, not wait for 4096 samples.
+            if ((i & 255) == 0 && (worker.threadShouldExit() ||
+                offlineCancel.load(std::memory_order_acquire) ||
+                !offlineMode.load(std::memory_order_acquire) ||
+                generation != fileRequestGeneration.load(std::memory_order_acquire)))
+                break;
             float value=decoded.getSample(0,i);
             if(reader->numChannels>1)value=0.5f*(value+decoded.getSample(1,i));
             analyseAudioSample(value);
         }
+        if (worker.threadShouldExit() || offlineCancel.load(std::memory_order_acquire) ||
+            !offlineMode.load(std::memory_order_acquire) ||
+            generation != fileRequestGeneration.load(std::memory_order_acquire))
+            break;
         if ((offset/blockSize)%32==0) {
             fileProgress.store(total>0?static_cast<float>(double(offset+n)/double(total)):1.0f);
             fileAnalyzedSeconds.store(static_cast<float>((offset+n)/reader->sampleRate));
@@ -247,7 +279,13 @@ void TonicRecreationAudioProcessor::AnalysisWorker::run(){
             for(int i=0;i<n1;++i)batch[(size_t)i]=parent.sampleQueue[(size_t)(start1+i)];
             for(int i=0;i<n2;++i)batch[(size_t)(n1+i)]=parent.sampleQueue[(size_t)(start2+i)];
             parent.sampleFifo.finishedRead(count);
-            for(int i=0;i<count;++i)parent.analyseAudioSample(batch[(size_t)i]);
+            for(int i=0;i<count;++i) {
+                // Prioritize explicit file requests over an already-copied live batch.
+                if ((i & 255) == 0 && (threadShouldExit() ||
+                    parent.offlineMode.load(std::memory_order_acquire)))
+                    break;
+                parent.analyseAudioSample(batch[(size_t)i]);
+            }
         }
     }
 }
@@ -258,7 +296,31 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
     onsetEnergySum += sample * sample;
     ++onsetSamples;
     if (onsetSamples < tempoHopSamples) return;
-    const float energy = std::log1p(1000.0f * onsetEnergySum / onsetSamples);
+    // Do not keep presenting an old BPM after input has stopped. Use the
+    // original RMS envelope, rather than novelty, to distinguish silence
+    // from a sustained tone that happens to have no transients.
+    const float meanSquare = onsetEnergySum / onsetSamples;
+    if (meanSquare < 1.0e-8f) {
+        ++tempoSilentHops;
+        if (tempoSilentHops == juce::roundToInt(actualOnsetRate * 2.0f)) {
+            detectedBpm.store(0.0f);
+            bpmConfidence.store(0.0f);
+            tempoAmbiguity.store(0.0f);
+            lastStableBpm = 0.0f;
+            onsetHistory.fill(0.0f);
+            onsetWrite = onsetCount = bpmAnalysisFrames = 0;
+            previousEnergy = smoothedOnset = 0.0f;
+        }
+        // Do not refill the history with silence or continually re-estimate it.
+        if (tempoSilentHops >= juce::roundToInt(actualOnsetRate * 2.0f)) {
+            onsetSamples = 0;
+            onsetEnergySum = 0.0f;
+            return;
+        }
+    } else {
+        tempoSilentHops = 0;
+    }
+    const float energy = std::log1p(1000.0f * meanSquare);
     const float rise = std::max(0.0f, energy - previousEnergy);
     previousEnergy = 0.7f * previousEnergy + 0.3f * energy;
     smoothedOnset = 0.65f * smoothedOnset + 0.35f * rise;
@@ -266,14 +328,16 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
     onsetWrite = (onsetWrite + 1) % onsetHistoryLength;
     onsetCount = std::min(onsetCount + 1, onsetHistoryLength);
     onsetSamples = 0; onsetEnergySum = 0.0f;
-    if (++bpmAnalysisFrames >= 150) {
+    // An update every 1.5 elapsed seconds, independent of the source sample rate.
+    if (++bpmAnalysisFrames >= std::max(1, juce::roundToInt(1.5f * actualOnsetRate))) {
         bpmAnalysisFrames = 0;
         estimateTempo();
     }
 }
 
 void TonicRecreationAudioProcessor::estimateTempo() {
-    if (onsetCount < 600) return;
+    // Require 6 seconds of actual source time, not an assumed 100 Hz rate.
+    if (onsetCount < juce::roundToInt(6.0f * actualOnsetRate)) return;
     constexpr int length=1200;
     const int count=std::min(onsetCount,length);
     std::array<float,length> envelope {};
@@ -287,6 +351,7 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     for(int i=0;i<count;++i){
         auto& v=envelope[(size_t)i];v=std::max(0.0f,v-mean*0.65f);energy+=v*v;
     }
+    // A weak or unstructured rhythmic signal is not evidence of a stable BPM.
     if(energy<0.001f){detectedBpm.store(0);bpmConfidence.store(0);lastStableBpm=0;tempoAmbiguity=0;return;}
     // One normalized autocorrelation pass for the entire 40-240 BPM search space.
     // A beat hypothesis receives evidence from its half/double time neighbors;
@@ -346,7 +411,7 @@ void TonicRecreationAudioProcessor::estimateTempo() {
 void TonicRecreationAudioProcessor::analyseWindow(){
     double energy=0;
     for(int i=0;i<N;++i){
-        const float v=history[(size_t)((historyWrite+i)%N)];
+        const float v=history[(size_t)((historyWrite+i)&(N-1))];
         energy+=double(v)*v;
         fftBuffer[(size_t)i]=v*hannWindow[(size_t)i];
     }
@@ -354,7 +419,10 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     const float gate=state.getRawParameterValue("sensitivity")->load();
     if(rms<gate){
         if(++silentFrames>=4){
-            chromaMemory.fill(0);stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
+            chromaMemory.fill(0);chordMemory.fill(0);
+            stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
+            heldChordRoot=heldChordKind=-1;chordHold=0;
+            tuningCentsMemory=0.0f;detectedTuningHz.store(440.0f);tuningConfidence.store(0.0f);
             detectedRoot.store(-1);detectedMode.store(2);chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
             for(auto& v:liveChroma)v.store(0);
             for(int i=0;i<3;++i)candidateRoots[(size_t)i].store(-1);
@@ -375,6 +443,8 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     // Multiple note hypotheses can land on the same FFT peak. Count each
     // spectral peak only once to avoid biased A-reference estimates.
     std::array<unsigned char,N/2> visitedTuningBins {};
+    // Mark neighbouring bins too: two note hypotheses can pick different
+    // bins of the same windowed spectral main lobe.
     for(int midi=36;midi<=95;++midi){
         const float f=noteFrequencies[(size_t)(midi-36)];
         float fundamental=0,score=0;
@@ -405,7 +475,9 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                     const float delta=std::abs(denom)>1.0e-6f?juce::jlimit(-0.5f,0.5f,0.5f*(left-right)/denom):0.0f;
                     const float cents=1200.0f*std::log2(float((bestBin+delta)*analysisSampleRate/N)/f);
                     if(std::abs(cents)<30){
-                        visitedTuningBins[(size_t)bestBin]=1;
+                        for (int neighbour = std::max(0,bestBin-1);
+                             neighbour <= std::min(N/2-1,bestBin+1);++neighbour)
+                            visitedTuningBins[(size_t)neighbour]=1;
                         // Avoid counting weak leakage bins as tuning observations.
                         const float weight=std::min(magnitude,100.0f);
                         tuningWeighted+=cents*weight;tuningWeight+=weight;
@@ -426,7 +498,11 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         tuningCentsMemory=0.94f*tuningCentsMemory+0.06f*cents;
         detectedTuningHz.store(ref*std::pow(2.0f,tuningCentsMemory/1200.0f));
         tuningConfidence.store(juce::jlimit(0.0f,1.0f,(effectivePeaks-1.0f)/8.0f));
-    } else { tuningConfidence.store(tuningConfidence.load()*0.93f); }
+    } else {
+        tuningConfidence.store(tuningConfidence.load()*0.90f);
+        // Treat the result as unavailable once the evidence disappears.
+        if (tuningConfidence.load() < 0.025f) detectedTuningHz.store(440.0f);
+    }
     const float total=std::accumulate(c.begin(),c.end(),0.0f);
     if(total<1.0e-9f)return;
     const float alpha=state.getRawParameterValue("responsiveness")->load();
@@ -446,7 +522,11 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     else{pendingRoot=best.root;pendingMode=best.mode;pendingCount=1;}
     if(pendingCount>=4&&best.score>0.30f){stableRoot=best.root;stableMode=best.mode;}
     detectedRoot.store(stableRoot);detectedMode.store(stableMode);
-    confidence.store(juce::jlimit(0.0f,1.0f,(best.score-ranking[1].score)*3.0f));
+    // Only report key confidence when the leading candidate is both
+    // distinguishable from the runner-up and itself a credible match.
+    const float keyMargin = std::max(0.0f, best.score-ranking[1].score);
+    const float fit = juce::jlimit(0.0f,1.0f,(best.score-0.25f)/0.55f);
+    confidence.store(juce::jlimit(0.0f,1.0f,keyMargin*3.0f)*fit);
     // Short-memory chord analysis; don't use long-term key chroma to label each chord.
     // Penalize out-of-chord notes and require concentrated pitch-class energy.
     const float chordAlpha=0.42f;
@@ -475,7 +555,16 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     const float margin=winner.value-scores[1].value;
     const float cc=juce::jlimit(0.0f,1.0f,margin*7.0f);
     // Abstain on dense/polyphonic mixtures and uncertain winner separation.
-    const bool credible=winner.value>0.12f && margin>0.018f && peak>0.12f;
+    // Three-tone support is essential: isolated bass notes and prominent
+    // harmonic overtones must not be labelled as full major/minor chords.
+    const float tone0=chordMemory[(size_t)winner.root];
+    const float tone1=chordMemory[(size_t)((winner.root+intervals[winner.kind][1])%12)];
+    const float tone2=chordMemory[(size_t)((winner.root+intervals[winner.kind][2])%12)];
+    const float weakestTone=std::min(tone0,std::min(tone1,tone2));
+    const float chordSupport=tone0+tone1+tone2;
+    const bool credible=winner.value>0.12f && margin>0.018f && peak>0.12f
+        && chordSupport > 0.53f * chromaTotal
+        && weakestTone > 0.055f * chromaTotal;
     if(credible){
         if(heldChordRoot==winner.root&&heldChordKind==winner.kind)chordHold=std::min(10,chordHold+1);
         else {heldChordRoot=winner.root;heldChordKind=winner.kind;chordHold=1;}

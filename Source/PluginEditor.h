@@ -2,7 +2,9 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
-class TonicRecreationAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer, public juce::FileDragAndDropTarget {
+class TonicRecreationAudioProcessorEditor final : public juce::AudioProcessorEditor,
+    private juce::Timer, public juce::FileDragAndDropTarget
+{
 public:
     explicit TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor&);
     ~TonicRecreationAudioProcessorEditor() override;
@@ -14,15 +16,12 @@ public:
     void filesDropped(const juce::StringArray&, int, int) override;
 private:
     void timerCallback() override;
+    void loadFile(const juce::File&);
     TonicRecreationAudioProcessor& processor;
-    juce::Label title, keyLabel, subtitle, candidatesLabel, chordLabel, tuningLabel;
-    juce::Label bpmValue, bpmCaption, fileStatus;
-    juce::ToggleButton pauseButton, flats, chords;
+    juce::Label brand, keyLabel, keyHint, candidates, chord, bpm, bpmHint, referenceA, referenceHint, fileStatus;
+    juce::TextButton pauseButton {"Pause"}, resetButton {"Reset"};
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
     std::unique_ptr<juce::FileChooser> fileChooser;
-    bool dragHover=false;
-    void loadFile(const juce::File&);
-    juce::TextButton resetButton {"Reset"};
-    juce::AudioProcessorValueTreeState::ButtonAttachment flatsAttachment, chordsAttachment;
+    bool dragHover = false;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TonicRecreationAudioProcessorEditor)
 };

@@ -74,7 +74,7 @@ private:
     static constexpr int onsetHistoryLength = 1400; // 14 s of 100 Hz onset novelty
     static constexpr int onsetHopRate = 100;
     std::array<float,onsetHistoryLength> onsetHistory {};
-    int onsetWrite=0, onsetCount=0, onsetSamples=0, bpmAnalysisFrames=0;
+    int onsetWrite=0, onsetCount=0, onsetSamples=0, bpmAnalysisFrames=0, tempoSilentHops=0;
     std::atomic<float> tempoAmbiguity {0.0f};
     float onsetEnergySum=0.0f, previousEnergy=0.0f, smoothedOnset=0.0f;
     float lastStableBpm=0.0f;
