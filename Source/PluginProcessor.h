@@ -1,9 +1,19 @@
 #pragma once
 #include <JuceHeader.h>
 #include <array>
+#include <cstdint>
 #include <atomic>
 #include <vector>
 #include <juce_dsp/juce_dsp.h>
+#include "TonalPhraseTracker.h"
+#include "BeatAlignedHarmony.h"
+#include "TempoEvidenceGate.h"
+#include "TempoContinuity.h"
+#include "RelativeModeEvidence.h"
+#include "DownbeatChordTranscriber.h"
+#include "TonalCenterModel.h"
+#include "TemporalTonalFeatures.h"
+#include "KeyTemporalConsensus.h"
 
 class TonicRecreationAudioProcessor final : public juce::AudioProcessor {
 public:
@@ -51,6 +61,10 @@ public:
     float getTempoAmbiguity() const { return tempoAmbiguity.load(std::memory_order_relaxed); }
     float getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
     bool hasHostBpm() const { return hostBpmValid.load(std::memory_order_relaxed); }
+    int getTranscribedChordRoot() const { return transcribedChordRoot.load(); }
+    int getTranscribedChordQuality() const { return transcribedChordQuality.load(); }
+    int getTranscribedChordBass() const { return transcribedChordBass.load(); }
+    float getTranscribedChordEvidence() const { return transcribedChordEvidence.load(); }
     int getChordRoot() const { return chordRoot.load(); }
     int getChordKind() const { return chordKind.load(); } // 0 maj 1 min 2 dim 3 aug
     float getChordConfidence() const { return chordConfidence.load(); }
@@ -71,13 +85,17 @@ private:
     std::array<std::atomic<float>,3> candidateScores {};
     std::atomic<float> detectedBpm {0.0f}, bpmConfidence {0.0f}, hostBpm {0.0f};
     std::atomic<bool> hostBpmValid {false};
-    static constexpr int onsetHistoryLength = 1400; // 14 s of 100 Hz onset novelty
+    static constexpr int onsetHistoryLength = 4200; // up to 42 seconds at 100 Hz; worker thread only
     static constexpr int onsetHopRate = 100;
     std::array<float,onsetHistoryLength> onsetHistory {};
     int onsetWrite=0, onsetCount=0, onsetSamples=0, bpmAnalysisFrames=0, tempoSilentHops=0;
     std::atomic<float> tempoAmbiguity {0.0f};
-    float onsetEnergySum=0.0f, previousEnergy=0.0f, smoothedOnset=0.0f;
+    float onsetEnergySum=0.0f, onsetHighEnergySum=0.0f;
+    float tempoHighpassDecay=0.0f; // Calculated on worker at sample-rate changes, never per sample
+    float tempoLowpass=0.0f, previousEnergy=0.0f, previousHighEnergy=0.0f, smoothedOnset=0.0f;
     float lastStableBpm=0.0f;
+    skell::TempoEvidenceGate weakTempoGate;
+    skell::TempoContinuity tempoContinuity;
     void consumeTempoSample(float sample);
     void estimateTempo();
     double currentSampleRate=44100.0;
@@ -108,19 +126,42 @@ private:
     std::array<float,windowSize> history {};
     std::vector<float> fftBuffer;
     std::array<float,windowSize/2> spectrumPower {};
+    // Causal median time/frequency separation on the analysis worker only.
+    static constexpr int harmonicFrames = 7;
+    std::array<std::array<float,windowSize/2>,harmonicFrames> spectralHistory {};
+    std::array<float,windowSize/2> tonalPower {};
+    std::array<float,windowSize/2> harmonicMask {};
+    int harmonicWrite = 0, harmonicCount = 0;
     std::array<int,60*3> noteBins {};
     std::array<float,60> noteFrequencies {};
     int tempoHopSamples=441;
     float actualOnsetRate=100.0f;
     void rebuildFrequencyMap(double sampleRate);
     std::array<float,windowSize> hannWindow {};
+    skell::TonalPhraseTracker phraseTracker;
+    skell::BeatAlignedHarmony beatGrid;
+    skell::DownbeatChordTracker downbeatChordTracker;
+    skell::RelativeModeEvidence relativeModeEvidence;
+    skell::KeyEvidenceConsistency keyConsistency;
+    skell::KeyTemporalConsensus temporalKeyConsensus;
+    skell::TonalCenterFeatures learnedTonalFeatures;
+    skell::TemporalTonalFeatures temporalTonalFeatures;
+    std::atomic<int> transcribedChordRoot{-1},transcribedChordQuality{-1},transcribedChordBass{-1};
+    std::atomic<float> transcribedChordEvidence{0.0f};
+    uint64_t analyzedSamples = 0;
+    skell::BassFrame lastBassFrame {};
     std::array<float,12> chordMemory {};
+    // Worker-owned sparse chord-change evidence, not frame-duration weighting.
+    std::array<float,12> progressionRootEvidence {};
+    int lastProgressionRoot=-1, lastProgressionKind=-1;
+    int progressionEvents=0;
     int heldChordRoot=-1, heldChordKind=-1, chordHold=0;
     float tuningCentsMemory=0.0f;
     std::array<float,12> chromaMemory {};
     int historyWrite=0, historyCount=0, samplesSinceWindow=0, silentFrames=0;
     int stableRoot=-1, stableMode=2, pendingRoot=-1, pendingMode=2, pendingCount=0;
     void analyseWindow();
+    void updateHarmonicMask();
     void resetAnalysis();
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TonicRecreationAudioProcessor)
 };

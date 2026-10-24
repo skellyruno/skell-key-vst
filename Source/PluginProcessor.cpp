@@ -1,5 +1,12 @@
+#include "FixedTemporalMedian.h"
+#include "RollingFrequencyMedian.h"
+#include "TempoEvidenceGate.h"
 #include "PluginProcessor.h"
+#include "KeySilenceGate.h"
+#include "KeyCandidateScore.h"
 #include "PluginEditor.h"
+#include "StereoAnalysisMix.h"
+#include "TempoOctaveGuard.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -10,12 +17,7 @@ constexpr double pi=3.14159265358979323846;
 constexpr float majorProfile[12]={6.35f,2.23f,3.48f,2.33f,4.38f,4.09f,2.52f,5.19f,2.39f,3.66f,2.29f,2.88f};
 constexpr float minorProfile[12]={6.33f,2.68f,3.52f,5.38f,2.60f,3.53f,2.54f,4.75f,3.98f,2.69f,3.34f,3.17f};
 float correlation(const std::array<float,12>& c, int root, const float* profile) {
-    float avgC=0,avgP=0;
-    for(int i=0;i<12;++i) {avgC+=c[(i+root)%12];avgP+=profile[i];}
-    avgC/=12;avgP/=12;
-    float ab=0, aa=0, bb=0;
-    for(int i=0;i<12;++i) {float a=c[(i+root)%12]-avgC,b=profile[i]-avgP;ab+=a*b;aa+=a*a;bb+=b*b;}
-    return ab/std::sqrt(std::max(1.0e-12f,aa*bb));
+    return skell::keyProfileCorrelation(c,root,profile);
 }
 }
 TonicRecreationAudioProcessor::TonicRecreationAudioProcessor()
@@ -35,15 +37,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout TonicRecreationAudioProcesso
     return p;
 }
 void TonicRecreationAudioProcessor::resetAnalysis(){
-    chordMemory.fill(0); heldChordRoot=heldChordKind=-1; chordHold=0; tuningCentsMemory=0; tempoAmbiguity=0;
+    phraseTracker.reset(); beatGrid.reset(); downbeatChordTracker.reset(); relativeModeEvidence.reset(); keyConsistency.reset(); temporalKeyConsensus.reset(); learnedTonalFeatures.reset(); temporalTonalFeatures.reset(); analyzedSamples = 0; lastBassFrame = {};
+    chordMemory.fill(0); progressionRootEvidence.fill(0);
+    lastProgressionRoot=lastProgressionKind=-1; progressionEvents=0;
+    heldChordRoot=heldChordKind=-1; chordHold=0; tuningCentsMemory=0; tempoAmbiguity=0;
+    harmonicWrite=harmonicCount=0; tonalPower.fill(0); harmonicMask.fill(0);
     chromaMemory.fill(0);history.fill(0);historyWrite=historyCount=samplesSinceWindow=silentFrames=0;
     stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
     detectedRoot.store(-1);detectedMode.store(2);confidence.store(0);
     chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
+    transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
+    transcribedChordBass.store(-1);transcribedChordEvidence.store(0);
     detectedTuningHz.store(440.0f); tuningConfidence.store(0.0f);
-    detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0;
+    detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0; weakTempoGate.reset(); tempoContinuity.reset();
     onsetHistory.fill(0); onsetWrite=onsetCount=onsetSamples=bpmAnalysisFrames=0;
-    onsetEnergySum=previousEnergy=smoothedOnset=0;
+    onsetEnergySum=onsetHighEnergySum=tempoLowpass=previousEnergy=previousHighEnergy=smoothedOnset=0;
     tempoSilentHops=0;
     for(auto& v:liveChroma)v.store(0);
     for(int i=0;i<3;++i){candidateRoots[(size_t)i].store(-1);candidateModes[(size_t)i].store(2);candidateScores[(size_t)i].store(0);}
@@ -59,6 +67,9 @@ void TonicRecreationAudioProcessor::prepareToPlay(double rate,int){
 // Offline files can have a different sample rate from the live DAW input.
 void TonicRecreationAudioProcessor::rebuildFrequencyMap(double sampleRate){
     analysisSampleRate=std::max(1.0,sampleRate);
+    temporalKeyConsensus.prepare(analysisSampleRate,hopSize);
+    tempoHighpassDecay=std::exp(-2.0f * 3.14159265f * 150.0f
+                                 / static_cast<float>(analysisSampleRate));
     tempoHopSamples=std::max(1,juce::roundToInt(analysisSampleRate/onsetHopRate));
     // Using the measured novelty-envelope rate avoids tempo drift when the
     // sample rate is not an exact multiple of 100 Hz.
@@ -114,11 +125,15 @@ void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
     // Valid channel layouts are mono and stereo (see isBusesLayoutSupported).
     const float* const left = buffer.getReadPointer(0);
     const float* const right = channels > 1 ? buffer.getReadPointer(1) : nullptr;
+    // Classify the incoming stereo block once before feeding the FIFO. Normal
+    // stereo still averages, but an almost-cancelled anti-phase pair no longer
+    // erases pitched evidence. The plugin never writes to the host buffer.
+    const auto stereoMix = skell::StereoAnalysisMix::decide(left,right,count);
     auto copy = [&](int destination, int offset, int length) {
         if (right != nullptr) {
             for (int i = 0; i < length; ++i)
                 sampleQueue[(size_t)(destination + i)] =
-                    0.5f * (left[offset + i] + right[offset + i]);
+                    stereoMix.sample(left[offset+i],right[offset+i]);
         } else {
             for (int i = 0; i < length; ++i)
                 sampleQueue[(size_t)(destination + i)] = left[offset + i];
@@ -175,6 +190,7 @@ void TonicRecreationAudioProcessor::discardLiveQueue(){
     sampleFifo.finishedRead(b+d);
 }
 void TonicRecreationAudioProcessor::analyseAudioSample(float sample){
+    ++analyzedSamples;
     consumeTempoSample(sample);
     history[(size_t)historyWrite]=sample;
     historyWrite=(historyWrite+1)&(windowSize-1);
@@ -212,6 +228,9 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
                 fileError.store(true, std::memory_order_release);
             break;
         }
+        const float* const left = decoded.getReadPointer(0);
+        const float* const right = reader->numChannels > 1 ? decoded.getReadPointer(1) : nullptr;
+        const auto stereoMix = skell::StereoAnalysisMix::decide(left,right,n);
         for(int i=0;i<n;++i){
             // Check regularly inside decoded blocks: a new drop or Live Input
             // must preempt the currently running analysis, not wait for 4096 samples.
@@ -220,15 +239,13 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
                 !offlineMode.load(std::memory_order_acquire) ||
                 generation != fileRequestGeneration.load(std::memory_order_acquire)))
                 break;
-            float value=decoded.getSample(0,i);
-            if(reader->numChannels>1)value=0.5f*(value+decoded.getSample(1,i));
-            analyseAudioSample(value);
+            analyseAudioSample(right != nullptr ? stereoMix.sample(left[i],right[i]) : left[i]);
         }
         if (worker.threadShouldExit() || offlineCancel.load(std::memory_order_acquire) ||
             !offlineMode.load(std::memory_order_acquire) ||
             generation != fileRequestGeneration.load(std::memory_order_acquire))
             break;
-        if ((offset/blockSize)%32==0) {
+        if ((offset/blockSize)%32==0 || offset+n>=total) {
             fileProgress.store(total>0?static_cast<float>(double(offset+n)/double(total)):1.0f);
             fileAnalyzedSeconds.store(static_cast<float>((offset+n)/reader->sampleRate));
         }
@@ -294,6 +311,12 @@ void TonicRecreationAudioProcessor::AnalysisWorker::run(){
 // This estimates a repeating beat interval, not a guaranteed downbeat or meter.
 void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
     onsetEnergySum += sample * sample;
+    // Second, transient-sensitive energy band: one-pole ~150 Hz high-pass.
+    // The tempo detector runs off the audio thread; these states are worker-owned.
+    tempoLowpass = tempoHighpassDecay * tempoLowpass
+                 + (1.0f-tempoHighpassDecay) * sample;
+    const float high = sample - tempoLowpass;
+    onsetHighEnergySum += high * high;
     ++onsetSamples;
     if (onsetSamples < tempoHopSamples) return;
     // Do not keep presenting an old BPM after input has stopped. Use the
@@ -307,27 +330,33 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
             bpmConfidence.store(0.0f);
             tempoAmbiguity.store(0.0f);
             lastStableBpm = 0.0f;
-            onsetHistory.fill(0.0f);
+            onsetHistory.fill(0.0f); weakTempoGate.reset(); tempoContinuity.reset();
             onsetWrite = onsetCount = bpmAnalysisFrames = 0;
-            previousEnergy = smoothedOnset = 0.0f;
+            previousEnergy = previousHighEnergy = smoothedOnset = tempoLowpass = 0.0f;
         }
         // Do not refill the history with silence or continually re-estimate it.
         if (tempoSilentHops >= juce::roundToInt(actualOnsetRate * 2.0f)) {
             onsetSamples = 0;
-            onsetEnergySum = 0.0f;
+            onsetEnergySum = onsetHighEnergySum = 0.0f;
             return;
         }
     } else {
         tempoSilentHops = 0;
     }
     const float energy = std::log1p(1000.0f * meanSquare);
-    const float rise = std::max(0.0f, energy - previousEnergy);
+    const float highEnergy = std::log1p(1000.0f * onsetHighEnergySum / onsetSamples);
+    const float broadbandRise = std::max(0.0f, energy - previousEnergy);
+    const float highRise = std::max(0.0f, highEnergy - previousHighEnergy);
+    // Blend onset evidence; make bright snare/hat attacks available without
+    // allowing them to completely override a strong low-frequency pulse.
+    const float rise = 0.55f * broadbandRise + 0.45f * highRise;
     previousEnergy = 0.7f * previousEnergy + 0.3f * energy;
+    previousHighEnergy = 0.7f * previousHighEnergy + 0.3f * highEnergy;
     smoothedOnset = 0.65f * smoothedOnset + 0.35f * rise;
     onsetHistory[static_cast<size_t>(onsetWrite)] = smoothedOnset;
     onsetWrite = (onsetWrite + 1) % onsetHistoryLength;
     onsetCount = std::min(onsetCount + 1, onsetHistoryLength);
-    onsetSamples = 0; onsetEnergySum = 0.0f;
+    onsetSamples = 0; onsetEnergySum = onsetHighEnergySum = 0.0f;
     // An update every 1.5 elapsed seconds, independent of the source sample rate.
     if (++bpmAnalysisFrames >= std::max(1, juce::roundToInt(1.5f * actualOnsetRate))) {
         bpmAnalysisFrames = 0;
@@ -338,7 +367,7 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
 void TonicRecreationAudioProcessor::estimateTempo() {
     // Require 6 seconds of actual source time, not an assumed 100 Hz rate.
     if (onsetCount < juce::roundToInt(6.0f * actualOnsetRate)) return;
-    constexpr int length=1200;
+    constexpr int length=3600;
     const int count=std::min(onsetCount,length);
     std::array<float,length> envelope {};
     float mean=0.0f;
@@ -352,7 +381,7 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         auto& v=envelope[(size_t)i];v=std::max(0.0f,v-mean*0.65f);energy+=v*v;
     }
     // A weak or unstructured rhythmic signal is not evidence of a stable BPM.
-    if(energy<0.001f){detectedBpm.store(0);bpmConfidence.store(0);lastStableBpm=0;tempoAmbiguity=0;return;}
+    if(energy<0.001f){detectedBpm.store(0);bpmConfidence.store(0);lastStableBpm=0;tempoAmbiguity=0;weakTempoGate.reset();tempoContinuity.reset();return;}
     // One normalized autocorrelation pass for the entire 40-240 BPM search space.
     // A beat hypothesis receives evidence from its half/double time neighbors;
     // this reduces common octave errors but cannot resolve fundamentally ambiguous rhythms.
@@ -373,27 +402,158 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         const float e2=energyPrefix[(size_t)(count-lag)];
         if(e1>1e-8f && e2>1e-8f) corr[(size_t)lag]=cross/std::sqrt(e1*e2);
     }
+    // 3:2 subdivisions are common in trap/hip-hop arrangements. They can
+    // produce a plausible but incorrect ~94 BPM for a 141 BPM track.
+    // Build octave-family evidence at the inferred beat lag; avoid treating
+    // the 3:2 alias as a valid half/double-time alternative.
+    auto localCorrelation = [&](int target)->float {
+        if(target<minLag || target>maxLag) return 0.0f;
+        float result=0.0f;
+        for(int offset=-1;offset<=1;++offset) {
+            const int index=target+offset;
+            if(index>=minLag && index<=maxLag)
+                result=std::max(result,corr[(size_t)index]);
+        }
+        return result;
+    };
     float best=-1.0f, second=-1.0f;int bestLag=0;
     const float host=hostBpmValid.load()?hostBpm.load():0.0f;
     for(int lag=minLag;lag<=maxLag;++lag){
         const float bpm=60.0f*actualOnsetRate/lag;
         float score=corr[(size_t)lag];
         if(lag*2<=maxLag)score+=0.30f*corr[(size_t)(lag*2)];
-        if(lag/2>=minLag && lag%2==0)score+=0.12f*corr[(size_t)(lag/2)];
+        if(lag/2>=minLag) score+=0.12f*localCorrelation(juce::roundToInt(lag*0.5f));
+        // A strong 3:2 relationship is often a subdivision, not the beat.
+        // Give the faster interpretation a limited bonus only if its own
+        // periodicity is supported. This is intentionally a *small* prior.
+        if(lag*3/2<=maxLag && lag%2==0)
+            score-=0.07f*localCorrelation(lag*3/2);
+        if(lag*2/3>=minLag)
+            score+=0.08f*localCorrelation(juce::roundToInt(lag*2.0f/3.0f));
         // A small prior makes pulse interpretations near conventional beat rates more stable.
         score*=0.92f+0.08f*std::exp(-0.5f*std::pow(std::log2(bpm/115.0f)/0.9f,2));
         if(lastStableBpm>0.0f && std::abs(std::log2(bpm/lastStableBpm))<0.10f)score*=1.06f;
         if(host>0.0f && std::abs(std::log2(bpm/host))<0.04f)score*=1.04f;
         if(score>best){second=best;best=score;bestLag=lag;}
-        else if(score>second)second=score;
+        else if(score>second && std::abs(lag-bestLag)>2)second=score;
     }
-    if(bestLag==0 || corr[(size_t)bestLag]<0.18f){detectedBpm.store(0);bpmConfidence.store(0);return;}
-    const float bpm=60.0f*actualOnsetRate/bestLag;
+
+    // Fractional beat-grid validation: a 3:2 subdivision can dominate lag
+    // autocorrelation even when the true pulse aligns better across 12 seconds.
+    // Use a small phase-folded novelty histogram to verify a faster 3:2 pulse.
+    // The decision is evidence-driven, not a fixed BPM preference.
+    auto phaseStrength = [&](float period)->float {
+        constexpr int bins=48;
+        std::array<float,bins> summed{};
+        std::array<int,bins> hit{};
+        float total=0.0f;
+        for(int i=0;i<count;++i) {
+            const float phase=std::fmod(static_cast<float>(i),period)/period;
+            const int bin=juce::jlimit(0,bins-1,static_cast<int>(phase*bins));
+            summed[(size_t)bin]+=envelope[(size_t)i];
+            ++hit[(size_t)bin];total+=envelope[(size_t)i];
+        }
+        float peak=0.0f;
+        for(int phase=0;phase<bins;++phase) {
+            float pulse=0.0f;
+            for(int j=0;j<5;++j) {
+                const int k=(phase+j)%bins;
+                pulse+=summed[(size_t)k]/std::max(1,hit[(size_t)k]);
+            }
+            peak=std::max(peak,pulse/5.0f);
+        }
+        const float mean=total/count;
+        return std::max(0.0f,(peak-mean)/(mean+1.0e-6f));
+    };
+    auto bestPhasePeriod = [&](float center)->std::pair<float,float> {
+        float peak=-1.0f,period=center;
+        for(int step=-8;step<=8;++step) {
+            const float trial=center+step*0.125f;
+            if(trial<minLag || trial>maxLag)continue;
+            const float evidence=phaseStrength(trial);
+            if(evidence>peak){peak=evidence;period=trial;}
+        }
+        return {peak,period};
+    };
+    float selectedPeriod=static_cast<float>(bestLag);
+    if(bestLag>0 && onsetCount>=juce::roundToInt(9.0f*actualOnsetRate)) {
+        const float fastPeriod=bestLag*(2.0f/3.0f);
+        if(fastPeriod>=minLag+1 && fastPeriod<=maxLag-1) {
+            const auto slower=bestPhasePeriod(static_cast<float>(bestLag));
+            const auto faster=bestPhasePeriod(fastPeriod);
+            const float fastCorr=localCorrelation(juce::roundToInt(fastPeriod));
+            if ((fastCorr > 0.22f && faster.first > slower.first*1.20f
+                 && faster.first > slower.first + 0.23f)
+                || (corr[(size_t)bestLag] < 0.18f
+                    && skell::TempoEvidenceGate::preferThreeTwoFast(
+                        localCorrelation(bestLag), fastCorr, slower.first, faster.first))) {
+                selectedPeriod=faster.second;
+                bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
+            }
+        }
+    }
+
+    // Tempo-level hysteresis for a 3:2 alias: once a faster pulse has
+    // independent grid support, do not flicker back to a subdivision simply
+    // because the lag correlation momentarily becomes strongest.
+    if (selectedPeriod>0.0f && lastStableBpm>0.0f) {
+        const float currentBpm=60.0f*actualOnsetRate/selectedPeriod;
+        const float ratio=lastStableBpm/currentBpm;
+        if(ratio>1.46f && ratio<1.54f) {
+            const float previousPeriod=60.0f*actualOnsetRate/lastStableBpm;
+            const float oldEvidence=phaseStrength(previousPeriod);
+            const float newEvidence=phaseStrength(selectedPeriod);
+            if(oldEvidence>newEvidence*0.65f) {
+                selectedPeriod=previousPeriod;
+                bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(previousPeriod));
+            }
+        }
+    }
+    // Protect a previously supported double-time pulse from a late half-time
+    // autocorrelation peak only when *both* beat-grid and correlation evidence
+    // still support the fast interpretation. This does not assume any BPM.
+    if (selectedPeriod > 0.0f && lastStableBpm > 0.0f) {
+        const float proposedBpm = 60.0f * actualOnsetRate / selectedPeriod;
+        const float oldPeriod = 60.0f * actualOnsetRate / lastStableBpm;
+        if (lastStableBpm > proposedBpm * 1.90f &&
+            lastStableBpm < proposedBpm * 2.10f &&
+            skell::holdSupportedDoubleTime(
+                lastStableBpm, proposedBpm,
+                localCorrelation(juce::roundToInt(oldPeriod)),
+                localCorrelation(juce::roundToInt(selectedPeriod)),
+                phaseStrength(oldPeriod), phaseStrength(selectedPeriod))) {
+            selectedPeriod = oldPeriod;
+            bestLag = juce::jlimit(minLag, maxLag, juce::roundToInt(oldPeriod));
+        }
+    }
+    // Weak pulse fallback: require repeated agreement between independently
+    // measured autocorrelation and phase-folded onset timing.
+    const float chosenCorr = bestLag>0 ? corr[(size_t)bestLag] : 0.0f;
+    const float chosenBpm = selectedPeriod>0.0f ? 60.0f*actualOnsetRate/selectedPeriod : 0.0f;
+    const bool strongPulse = chosenCorr >= 0.18f;
+    const float chosenPhase = (!strongPulse && bestLag>0) ? phaseStrength(selectedPeriod) : 0.0f;
+    const bool recurringWeakPulse = !strongPulse && bestLag>0 && weakTempoGate.observeWeak(
+        chosenBpm, chosenCorr, chosenPhase, count/actualOnsetRate);
+    if (bestLag==0 || (!strongPulse && !recurringWeakPulse)) {
+        const auto held=tempoContinuity.recover(analyzedSamples/analysisSampleRate);
+        if (held.held) {
+            detectedBpm.store(held.bpm); bpmConfidence.store(held.confidence);
+        } else {
+            detectedBpm.store(0); bpmConfidence.store(0);
+        }
+        return;
+    }
+    if (strongPulse) weakTempoGate.reset();
+    const float bpm=chosenBpm;
     const int halfLag=bestLag*2, doubleLag=bestLag/2;
     const float half=halfLag<=maxLag?corr[(size_t)halfLag]:0.0f;
     const float dbl=doubleLag>=minLag?corr[(size_t)doubleLag]:0.0f;
     tempoAmbiguity=juce::jlimit(0.0f,1.0f,std::max(half,dbl)/std::max(0.01f,corr[(size_t)bestLag]));
-    const float conf=juce::jlimit(0.0f,1.0f,(corr[(size_t)bestLag]-0.15f)/0.60f)*(1.0f-0.30f*tempoAmbiguity);
+    const float originalConf=juce::jlimit(0.0f,1.0f,(chosenCorr-0.15f)/0.60f)
+        *(1.0f-0.30f*tempoAmbiguity);
+    const float conf=strongPulse ? originalConf
+        : skell::TempoEvidenceGate::weakConfidence(chosenCorr, chosenPhase)
+          *(1.0f-0.30f*tempoAmbiguity);
     // Ignore a single sudden octave jump when pulse evidence is ambiguous.
     const bool octaveJump = lastStableBpm > 0.0f &&
         (std::abs(bpm / lastStableBpm - 2.0f) < 0.10f ||
@@ -406,6 +566,59 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     if(lastStableBpm==0.0f || std::abs(bpm-lastStableBpm)>8.0f)lastStableBpm=bpm;
     else lastStableBpm=0.75f*lastStableBpm+0.25f*bpm;
     detectedBpm.store(lastStableBpm);bpmConfidence.store(conf);
+    tempoContinuity.observe(lastStableBpm,conf,analyzedSamples/analysisSampleRate);
+    // V38: estimate a beat phase from actual transients rather than treating
+    // the beginning of a file as bar one. All processing is worker-only.
+    if (conf > 0.08f) {
+        const auto phase = skell::estimateBeatPhase(onsetHistory, onsetWrite, onsetCount,
+                                                    actualOnsetRate, lastStableBpm);
+        if (phase.confidence >= 0.09f) {
+            beatGrid.configure(lastStableBpm,
+                static_cast<float>(analyzedSamples / analysisSampleRate) - phase.ageSeconds,
+                phase.confidence);
+            const auto accent = skell::estimateDownbeatAccent(onsetHistory,onsetWrite,onsetCount,
+                                                              actualOnsetRate,lastStableBpm,phase.ageSeconds);
+            downbeatChordTracker.configure(lastStableBpm,
+                analyzedSamples / analysisSampleRate - phase.ageSeconds,
+                phase.confidence,accent);
+        }
+    }
+
+}
+
+
+void TonicRecreationAudioProcessor::updateHarmonicMask() {
+    // Worker-only, no heap allocations: a causal 7-frame median distinguishes
+    // sustained harmonic bins from short broadband percussion transients.
+    constexpr int bins = windowSize/2;
+    auto& current=spectralHistory[(size_t)harmonicWrite];
+    for(int k=0;k<bins;++k)
+        current[(size_t)k]=std::sqrt(std::max(0.0f,spectrumPower[(size_t)k]));
+    harmonicWrite=(harmonicWrite+1)%harmonicFrames;
+    harmonicCount=std::min(harmonicFrames,harmonicCount+1);
+    harmonicMask.fill(1.0f);
+    tonalPower.fill(0.0f);
+    // Never process FFT bins above the highest note harmonic used by chroma.
+    const int lastBin=std::min(bins-7,juce::roundToInt(6200.0f*windowSize/analysisSampleRate)+8);
+    skell::RollingFrequencyMedian13 frequencyMedian;
+    if (lastBin > 6) frequencyMedian.reset(current.data());
+    for(int k=6;k<lastBin;++k){
+        if (k > 6) frequencyMedian.advance(current[(size_t)(k-7)], current[(size_t)(k+6)]);
+        std::array<float,harmonicFrames> time{};
+        for(int t=0;t<harmonicCount;++t)time[(size_t)t]=spectralHistory[(size_t)t][(size_t)k];
+        // V52: exact fixed-size upper median; avoids per-bin general selection.
+        const float harmonic=skell::temporalMedian7(time.data(), harmonicCount);
+        const float percussive=frequencyMedian.median();
+        // Soft mask with a floor; no binary spectral holes or hard gating.
+        const float h=harmonic*harmonic;
+        const float p=1.5f*percussive;
+        harmonicMask[(size_t)k]=juce::jlimit(0.05f,1.0f,h/(h+p*p+1.0e-12f));
+        // Subtract the local broadband floor; harmonically concentrated bins
+        // remain while drum/noise-dominated bins contribute less to chroma.
+        const float tonal = std::max(0.0f,current[(size_t)k] - 1.25f*percussive);
+        tonalPower[(size_t)k]=tonal*tonal*harmonicMask[(size_t)k];
+    }
+
 }
 
 void TonicRecreationAudioProcessor::analyseWindow(){
@@ -418,15 +631,33 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     const float rms=float(std::sqrt(energy/N));
     const float gate=state.getRawParameterValue("sensitivity")->load();
     if(rms<gate){
-        if(++silentFrames>=4){
+        const int resetFrames=skell::keySilenceResetFrames(analysisSampleRate,hopSize);
+        // No fresh tonal evidence during the rest. Hide readouts while retaining
+        // internal context for quick relock if the SAME song resumes shortly.
+        if(++silentFrames==1){
+            detectedRoot.store(-1); detectedMode.store(2);
+            chordRoot.store(-1); chordKind.store(-1); chordConfidence.store(0);
+            for(auto& v:candidateRoots)v.store(-1);
+            transcribedChordRoot.store(-1); transcribedChordQuality.store(-1);
+            transcribedChordBass.store(-1); transcribedChordEvidence.store(0);
+        }
+        if(silentFrames==resetFrames){
+            phraseTracker.reset(); beatGrid.reset(); downbeatChordTracker.reset(); relativeModeEvidence.reset(); keyConsistency.reset(); temporalKeyConsensus.reset(); learnedTonalFeatures.reset(); temporalTonalFeatures.reset(); lastBassFrame = {};
+            // Prevent the previous song's seven-frame harmonic median leaking into the next.
+            harmonicCount=harmonicWrite=0;
             chromaMemory.fill(0);chordMemory.fill(0);
+            progressionRootEvidence.fill(0); progressionEvents=0;
+            lastProgressionRoot=lastProgressionKind=-1;
             stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
             heldChordRoot=heldChordKind=-1;chordHold=0;
             tuningCentsMemory=0.0f;detectedTuningHz.store(440.0f);tuningConfidence.store(0.0f);
             detectedRoot.store(-1);detectedMode.store(2);chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
+            transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
+            transcribedChordBass.store(-1);transcribedChordEvidence.store(0);
             for(auto& v:liveChroma)v.store(0);
             for(int i=0;i<3;++i)candidateRoots[(size_t)i].store(-1);
         }
+        silentFrames=std::min(silentFrames,resetFrames);
         confidence.store(0);return;
     }
     silentFrames=0;
@@ -437,7 +668,9 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         const float re=fftBuffer[(size_t)(2*k)],im=fftBuffer[(size_t)(2*k+1)];
         spectrumPower[(size_t)k]=re*re+im*im;
     }
-    std::array<float,12> c{};
+    updateHarmonicMask();
+    lastBassFrame = skell::BassFundamentalEstimator::analyze(tonalPower.data(), N/2, analysisSampleRate);
+    std::array<float,12> c{}, midChroma{}, bassChroma{};
     float tuningWeighted=0,tuningWeight=0,tuningWeightSquared=0;
     int tuningPeakCount=0;
     // Multiple note hypotheses can land on the same FFT peak. Count each
@@ -458,10 +691,14 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                 const float amplitude=spectrumPower[(size_t)j];
                 if(amplitude>best){best=amplitude;bestBin=j;}
             }
-            const float magnitude=std::sqrt(best);
+            // Tuning uses a true raw local peak, while pitch-class energy
+            // uses harmonic content after percussion suppression.
+            const float rawMagnitude=std::sqrt(best);
+            const float magnitude=std::sqrt(std::max(0.0f,tonalPower[(size_t)bestBin]));
             if(h==1){fundamental=magnitude;
                 // Only high-resolution notes make useful FFT-bin tuning measurements.
-                if(bin>70 && bestBin>1 && bestBin<N/2-2 && magnitude>0.01f
+                if(bin>70 && bestBin>1 && bestBin<N/2-2 && rawMagnitude>0.01f
+                   && harmonicMask[(size_t)bestBin] > 0.45f
                    && !visitedTuningBins[(size_t)bestBin]
                    && spectrumPower[(size_t)bestBin] > spectrumPower[(size_t)(bestBin-1)]
                    && spectrumPower[(size_t)bestBin] >= spectrumPower[(size_t)(bestBin+1)]){
@@ -479,7 +716,7 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                              neighbour <= std::min(N/2-1,bestBin+1);++neighbour)
                             visitedTuningBins[(size_t)neighbour]=1;
                         // Avoid counting weak leakage bins as tuning observations.
-                        const float weight=std::min(magnitude,100.0f);
+                        const float weight=std::min(rawMagnitude,100.0f) * harmonicMask[(size_t)bestBin];
                         tuningWeighted+=cents*weight;tuningWeight+=weight;
                         tuningWeightSquared+=weight*weight;
                         ++tuningPeakCount;
@@ -489,7 +726,17 @@ void TonicRecreationAudioProcessor::analyseWindow(){
             score+=magnitude/float(h*h);
         }
         // Reduce false note evidence from upper partials of lower notes.
-        c[(size_t)(midi%12)]+=std::sqrt(std::max(0.0f,score))*0.75f+std::sqrt(std::max(0.0f,fundamental))*0.25f;
+        const float noteSalience = std::sqrt(std::max(0.0f,score))*0.75f
+                                  + std::sqrt(std::max(0.0f,fundamental))*0.25f;
+        c[(size_t)(midi%12)] += noteSalience;
+        // Separate mid-register chroma limits bias from low kick/bass energy
+        // and high-register overtones without discarding those registers.
+        if (midi >= 48 && midi <= 83)
+            midChroma[(size_t)(midi%12)] += noteSalience;
+        // Separate low-register tonal evidence. The harmonic mask and the
+        // fundamental term above reduce transient/kick contamination.
+        if (midi >= 36 && midi <= 59)
+            bassChroma[(size_t)(midi%12)] += noteSalience;
     }
     const float effectivePeaks=tuningWeightSquared>0.0f
         ?(tuningWeight*tuningWeight/tuningWeightSquared):0.0f;
@@ -503,21 +750,80 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         // Treat the result as unavailable once the evidence disappears.
         if (tuningConfidence.load() < 0.025f) detectedTuningHz.store(440.0f);
     }
+    // Normalize full-range and mid-register evidence independently.
+    // A band with more candidate note bins should not win simply by mass.
+    const float allMass = std::accumulate(c.begin(),c.end(),0.0f);
+    const float midMass = std::accumulate(midChroma.begin(),midChroma.end(),0.0f);
+    if (allMass > 1.0e-9f && midMass > 1.0e-9f) {
+        for (int pc=0; pc<12; ++pc)
+            c[(size_t)pc] = 0.25f*c[(size_t)pc]/allMass
+                          + 0.75f*midChroma[(size_t)pc]/midMass;
+    }
     const float total=std::accumulate(c.begin(),c.end(),0.0f);
     if(total<1.0e-9f)return;
+    temporalKeyConsensus.observe(c);
     const float alpha=state.getRawParameterValue("responsiveness")->load();
     for(int i=0;i<12;++i){
         chromaMemory[(size_t)i]=(1-alpha)*chromaMemory[(size_t)i]+alpha*c[(size_t)i]/total;
         liveChroma[(size_t)i].store(chromaMemory[(size_t)i]);
     }
+    // Track-level feature extraction uses exactly the features provided to the
+    // independently supervised trainer. The untrained model cannot affect rank.
+    learnedTonalFeatures.observe(chromaMemory,lastBassFrame.pc,lastBassFrame.confidence);
+    temporalTonalFeatures.observe(chromaMemory,c,lastBassFrame.pc,lastBassFrame.confidence);
+    const auto learned = (learnedTonalFeatures.frames >= 64)
+        ? skell::predictTonalCenter(learnedTonalFeatures.values()) : skell::TonalPrediction{};
+    // Tonal-center evidence is independent of the Krumhansl profile.
+    // Its contribution is deliberately bounded: bass can indicate a root,
+    // but a bass line alone is not sufficient to name the key.
+    const float bassMass = std::accumulate(bassChroma.begin(),bassChroma.end(),0.0f);
+    std::array<float,12> bassEvidence{};
+    if (bassMass > 1.0e-7f) {
+        for (int root=0; root<12; ++root) {
+            const float tonic = bassChroma[(size_t)root]/bassMass;
+            const float fifth = bassChroma[(size_t)((root+7)%12)]/bassMass;
+            bassEvidence[(size_t)root] = juce::jlimit(-0.08f,0.08f,
+                0.16f*(tonic-1.0f/12.0f) + 0.06f*(fifth-1.0f/12.0f));
+        }
+    }
+    // Phrase-level prior from distinct, credible chord transitions. A repeated
+    // ostinato does not accrue an unlimited bonus simply by lasting longer.
+    // The small bonus cannot overpower strong pitch-class evidence.
+    std::array<float,12> progressionBonus{};
+    if (progressionEvents >= 3) {
+        const float mass=std::accumulate(progressionRootEvidence.begin(),
+                                         progressionRootEvidence.end(),0.0f);
+        if (mass > 0.0f) for (int root=0;root<12;++root) {
+            const float relative=progressionRootEvidence[(size_t)root]/mass;
+            progressionBonus[(size_t)root]=juce::jlimit(-0.025f,0.035f,
+                0.10f*(relative-1.0f/12.0f));
+        }
+    }
     struct Candidate{float score;int root,mode;};
     std::array<Candidate,24> ranking{};int ix=0;
     for(int root=0;root<12;++root)for(int mode=0;mode<2;++mode)
-        ranking[(size_t)ix++]={correlation(chromaMemory,root,mode==0?majorProfile:minorProfile),root,mode};
+        ranking[(size_t)ix++]={skell::keyCandidateScore(
+            chromaMemory,root,mode,mode==0?majorProfile:minorProfile,
+            bassEvidence,progressionBonus,phraseTracker.bonus(root),
+            beatGrid.bonus(root),downbeatChordTracker.tonicBonus(root),
+            relativeModeEvidence.bonus(root,mode),learned),root,mode};
     std::partial_sort(ranking.begin(),ranking.begin()+3,ranking.end(),
         [](const auto& a,const auto& b){return a.score>b.score;});
+    const auto consensus=temporalKeyConsensus.propose(ranking[0].root,ranking[0].mode,
+                                                       phraseTracker,majorProfile,minorProfile);
+    if(consensus.root>=0){
+        auto it=std::find_if(ranking.begin(),ranking.end(),[&](const auto& candidate){
+            return candidate.root==consensus.root && candidate.mode==consensus.mode;
+        });
+        if(it!=ranking.end()){
+            const auto selected=*it;
+            for(auto walk=it;walk!=ranking.begin();--walk)*walk=*(walk-1);
+            ranking[0]=selected;
+        }
+    }
     for(int i=0;i<3;++i){candidateRoots[(size_t)i].store(ranking[(size_t)i].root);candidateModes[(size_t)i].store(ranking[(size_t)i].mode);candidateScores[(size_t)i].store(ranking[(size_t)i].score);}
     const auto& best=ranking[0];
+    keyConsistency.observe(best.root,best.mode);
     if(best.root==pendingRoot&&best.mode==pendingMode)++pendingCount;
     else{pendingRoot=best.root;pendingMode=best.mode;pendingCount=1;}
     if(pendingCount>=4&&best.score>0.30f){stableRoot=best.root;stableMode=best.mode;}
@@ -525,8 +831,9 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     // Only report key confidence when the leading candidate is both
     // distinguishable from the runner-up and itself a credible match.
     const float keyMargin = std::max(0.0f, best.score-ranking[1].score);
-    const float fit = juce::jlimit(0.0f,1.0f,(best.score-0.25f)/0.55f);
-    confidence.store(juce::jlimit(0.0f,1.0f,keyMargin*3.0f)*fit);
+    confidence.store(keyConsistency.displayEvidence(
+        keyMargin, best.score, keyConsistency.agreement(stableRoot,stableMode),
+        relativeModeEvidence.confirmedSupport(stableRoot,stableMode)));
     // Short-memory chord analysis; don't use long-term key chroma to label each chord.
     // Penalize out-of-chord notes and require concentrated pitch-class energy.
     const float chordAlpha=0.42f;
@@ -568,10 +875,49 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     if(credible){
         if(heldChordRoot==winner.root&&heldChordKind==winner.kind)chordHold=std::min(10,chordHold+1);
         else {heldChordRoot=winner.root;heldChordKind=winner.kind;chordHold=1;}
-        if(chordHold>=2){chordRoot.store(winner.root);chordKind.store(winner.kind);chordConfidence.store(cc);}
+        if(chordHold>=2){
+            chordRoot.store(winner.root);chordKind.store(winner.kind);chordConfidence.store(cc);
+            // Count a harmonic event only when a credible triad actually changes.
+            // Avoid learning the same looped chord on every FFT frame.
+            if ((winner.root!=lastProgressionRoot || winner.kind!=lastProgressionKind)
+                && cc > 0.12f) {
+                for (float& vote:progressionRootEvidence) vote*=0.985f;
+                progressionRootEvidence[(size_t)winner.root]+=std::min(cc,1.0f);
+                lastProgressionRoot=winner.root;
+                lastProgressionKind=winner.kind;
+                progressionEvents=std::min(100000,progressionEvents+1);
+            }
+        }
     } else {
         chordHold=0;heldChordRoot=heldChordKind=-1;
         chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
+    }
+    // Vote only when a pitched bass and a harmonic tonic triad agree.
+    // This evidence is independent of the spectral key-profile correlation.
+    relativeModeEvidence.observe(c,lastBassFrame.pc,lastBassFrame.confidence,
+                                 analyzedSamples / analysisSampleRate,
+                                 chordRoot.load(),chordKind.load(),chordConfidence.load());
+    // A new, worker-owned bass/harmonic phrase state. The evidence from the
+    // completed phrase is available on the NEXT key-ranking frame; no future audio.
+    phraseTracker.ingest(lastBassFrame, c, chordRoot.load(), chordKind.load(),
+                         chordConfidence.load(), detectedBpm.load(),
+                         static_cast<float>(hopSize / analysisSampleRate));
+    beatGrid.ingest(c, lastBassFrame.pc, lastBassFrame.confidence,
+                    chordRoot.load(), chordKind.load(), chordConfidence.load(),
+                    analyzedSamples / analysisSampleRate);
+    // V39: independent per-beat transcription, separate from the established
+    // triad/key estimators. No audio-thread changes or additional FFTs.
+    downbeatChordTracker.ingest(c,lastBassFrame.pc,lastBassFrame.confidence,
+                                analyzedSamples / analysisSampleRate);
+    const auto transcribed=downbeatChordTracker.current();
+    if (transcribed.valid() && transcribed.evidence>=0.17f) {
+        transcribedChordRoot.store(transcribed.root);
+        transcribedChordQuality.store(transcribed.quality);
+        transcribedChordBass.store(transcribed.inversion>0 ? transcribed.bass : -1);
+        transcribedChordEvidence.store(transcribed.evidence);
+    } else {
+        transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
+        transcribedChordBass.store(-1);transcribedChordEvidence.store(0.0f);
     }
 }
 juce::AudioProcessorEditor* TonicRecreationAudioProcessor::createEditor(){return new TonicRecreationAudioProcessorEditor(*this);}

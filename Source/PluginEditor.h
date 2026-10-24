@@ -2,6 +2,8 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
+class NeonButtonLookAndFeel;
+
 class TonicRecreationAudioProcessorEditor final : public juce::AudioProcessorEditor,
     private juce::Timer, public juce::FileDragAndDropTarget
 {
@@ -22,6 +24,7 @@ private:
     juce::TextButton pauseButton {"Pause"}, resetButton {"Reset"};
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
     std::unique_ptr<juce::FileChooser> fileChooser;
+    std::unique_ptr<NeonButtonLookAndFeel> buttonLook;
     bool dragHover = false;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TonicRecreationAudioProcessorEditor)
 };
