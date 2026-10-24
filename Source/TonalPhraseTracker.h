@@ -24,6 +24,9 @@ public:
         // The spectral map is fixed for each MIDI note; construct it once instead
         // of calling pow() for every FFT frame (~27 notes per 93 ms).
         static const std::array<float,27> frequencies = [] {
+            // Keep these bounds inside the lambda: MSVC cannot implicitly capture
+            // the function-local lo/hi variables in a captureless lambda.
+            constexpr int lo = 34, hi = 60;
             std::array<float,27> f{};
             for (int midi = lo; midi <= hi; ++midi)
                 f[static_cast<std::size_t>(midi-lo)] =

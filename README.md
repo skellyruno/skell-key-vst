@@ -24,3 +24,12 @@ Historical benchmarks and logs, obsolete README/change files, old docs, standalo
 ## Limitations
 
 This cleanup does not modify DSP formulas or provide any new accuracy improvement. Test suites have been intentionally omitted from the minimal release; keep a copy of the full V54 archive if you want to run historical regression and research tests. Windows GitHub compilation and FL Studio host testing have not been performed in this environment.
+
+## Windows MSVC fix (2026-10-24)
+
+`Source/TonalPhraseTracker.h` now declares the fixed MIDI frequency-map bounds
+inside its captureless static-initializer lambda. This corrects the MSVC
+C3493/C2440 compile errors without changing the computed note frequencies or DSP.
+
+The header was smoke-tested with GCC and Clang using C++17. The Windows
+GitHub Actions VST3 build still needs to be rerun to verify MSVC/JUCE.
