@@ -98,6 +98,13 @@ bool inScale(int pc, int root, int mode) {
 }
 } // namespace
 
+// Transparent button laid over the skeleton-and-piano scene; clicking it plays the key.
+class SceneHitButton final : public juce::Button {
+public:
+    SceneHitButton() : juce::Button("Play detected key") { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
+    void paintButton(juce::Graphics&, bool, bool) override {}
+};
+
 // Flat, squared bone buttons.
 class SkellLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
@@ -135,10 +142,21 @@ public:
 TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor& p)
   : AudioProcessorEditor(&p), processor(p) {
     setTitle("Skell Key");
-    setSize(designWidth, designHeight);
+    // The design space is 600 x 380; the default window is 85 % of that.
+    setSize(defaultWidth, defaultHeight);
     setResizable(true, true);
-    setResizeLimits(designWidth * 4 / 5, designHeight * 4 / 5, designWidth * 2, designHeight * 2);
+    setResizeLimits(defaultWidth * 4 / 5, defaultHeight * 4 / 5, defaultWidth * 2, defaultHeight * 2);
     if (auto* c = getConstrainer()) c->setFixedAspectRatio((double) designWidth / (double) designHeight);
+
+    handL = sceneArea.getCentreX() - 28.0f; handR = sceneArea.getCentreX() + 28.0f;
+    scene = std::make_unique<SceneHitButton>();
+    scene->setTooltip("Click the skeleton to hear the detected key");
+    scene->onClick = [this] {
+        if (view.root >= 0) processor.playKeyPreview(view.root, view.mode);
+    };
+    scene->onStateChange = [this] { repaint(); };
+    addAndMakeVisible(*scene);
+    resized();
 
     look = std::make_unique<SkellLookAndFeel>();
     for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) {
@@ -172,13 +190,14 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
         pauseButton.setButtonText("Pause");
         timerCallback();
     };
-    startTimerHz(20);
+    startTimerHz(30);
     timerCallback();
 }
 
 TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
     for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setLookAndFeel(nullptr);
+    scene.reset();
     look.reset();
 }
 
@@ -256,7 +275,15 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         chromaTarget[(size_t) i] = (root < 0 && !offline) ? 0.0f : processor.getChroma(i) / peak;
         chromaShown[(size_t) i] += (chromaTarget[(size_t) i] - chromaShown[(size_t) i]) * 0.35f;
     }
-    tonicPulse = juce::jmax(0.0f, tonicPulse - 0.08f);
+    {   // Input level (dB-ish) with a fast attack and slow release for the header strip.
+        const float l = processor.getInputLevel();
+        const float db = l > 1.0e-5f ? 20.0f * std::log10(l) : -100.0f;
+        const float target = juce::jlimit(0.0f, 1.0f, (db + 54.0f) / 54.0f);
+        level += (target - level) * (target > level ? 0.6f : 0.12f);
+    }
+    previewPc = processor.getPreviewPitchClass();
+    bpmNow = juce::String(view.bpmText).getFloatValue();
+    tonicPulse = juce::jmax(0.0f, tonicPulse - 0.05f);
     if (root != lastRoot) { tonicPulse = 1.0f; lastRoot = root; }
     repaint();
 }
@@ -295,14 +322,28 @@ void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
              juce::Justification::centredLeft, 0.16f);
     drawText(g, "KEY   /   TEMPO   /   TUNING", { 101.0f, 33.0f, 240.0f, 14.0f }, 9.0f, false, kBoneDim,
              juce::Justification::centredLeft, 0.18f);
-    // A spine as the rule under the header: a few lit vertebrae, then dim ones.
-    const float y = 55.0f;
+    // Header strip: an input level meter (lit segments) with a tempo playhead that
+    // sweeps one bar (4 beats) at the detected BPM.
+    const float y = 54.0f;
     const int n = 48;
     const float slot = (float) (designWidth - 28) / (float) n;
+    const int lit = juce::roundToInt(level * (float) n);
+    int head = -1;
+    if (bpmNow > 0.0f) {
+        const double beats = juce::Time::getMillisecondCounterHiRes() * 0.001 * (double) bpmNow / 60.0;
+        head = (int) (std::fmod(beats, 4.0) / 4.0 * (double) n);
+    }
     for (int i = 0; i < n; ++i) {
-        const bool lit = i < 6;
-        g.setColour(lit ? kAccent : kBoneFaint.withAlpha(0.9f));
-        g.fillRoundedRectangle(14.0f + slot * (float) i, y, slot - 2.2f, lit ? 3.0f : 2.0f, 1.0f);
+        const float x = 14.0f + slot * (float) i;
+        const bool on = i < lit;
+        const int trail = head >= 0 ? ((head - i) + n) % n : 99;
+        float h = on ? 3.4f : 2.0f;
+        juce::Colour c = on ? kAccent.withAlpha(0.55f + 0.45f * (float) i / (float) n) : kBoneFaint.withAlpha(0.9f);
+        if (trail == 0) { c = kBone; h = 6.0f; }
+        else if (trail == 1) { c = on ? kBone.withAlpha(0.8f) : kBoneDim; h = 4.6f; }
+        else if (trail == 2 && !on) c = kBoneDim.withAlpha(0.7f);
+        g.setColour(c);
+        g.fillRoundedRectangle(x, y + 3.0f - h * 0.5f, slot - 2.2f, h, 1.0f);
     }
 }
 
@@ -332,48 +373,114 @@ void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
     // Divider between the readout and the spine.
     g.setColour(kLine);
     g.drawLine(310.0f, 78.0f, 310.0f, 214.0f, 1.0f);
-    paintSpine(g, { 326.0f, 76.0f, 248.0f, 146.0f });
+    paintSpine(g, sceneArea);
 }
 
 void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Rectangle<float> area) {
-    const float slot = area.getWidth() / 12.0f, w = slot - 4.5f;
-    const float baseY = area.getBottom() - 20.0f, maxH = baseY - area.getY() - 6.0f;
+    // --- keyboard: one octave, C..B. White keys glow with the live chroma of that
+    // pitch class; keys in the detected key are bright, the tonic is accent green.
+    const float kbTop = area.getBottom() - 54.0f, kbH = 50.0f;
+    const float ww = area.getWidth() / 7.0f, bw = ww * 0.58f, bh = 30.0f;
+    static const int whitePc[7] = {0, 2, 4, 5, 7, 9, 11};
+    static const int blackPc[5] = {1, 3, 6, 8, 10};
+    static const int blackSlot[5] = {1, 2, 4, 5, 6};  // boundary after white key index-1
     const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
     const auto* names = flats ? flatNames : sharpNames;
+    const bool hover = scene != nullptr && scene->isOver();
 
-    g.setColour(kBoneFaint);
-    g.fillRect(area.getX(), baseY + 2.0f, area.getWidth(), 1.0f);
-    for (int pc = 0; pc < 12; ++pc) {
-        const float x = area.getX() + slot * (float) pc + 1.2f;
+    auto keyX = [&](int pc) -> float {          // centre x of a pitch class' key
+        for (int i = 0; i < 7; ++i) if (whitePc[i] == pc) return area.getX() + ww * ((float) i + 0.5f);
+        for (int i = 0; i < 5; ++i) if (blackPc[i] == pc) return area.getX() + ww * (float) blackSlot[i];
+        return area.getCentreX();
+    };
+
+    // --- skeleton (behind and above the keys) -------------------------------------
+    const float cx = area.getCentreX();
+    const juce::Colour bone = kBone.withAlpha(0.92f), shade = kBoneDim.withAlpha(0.8f);
+    // targets for the hands: left on the tonic, right on the fifth (or the sounding note)
+    float tl = cx - 28.0f, tr = cx + 28.0f;
+    bool pressL = false, pressR = false;
+    if (view.root >= 0) { tl = keyX(view.root); tr = keyX((view.root + 7) % 12); }
+    if (previewPc >= 0) { tr = keyX(previewPc); pressR = true; }
+    if (tl > tr) std::swap(tl, tr);   // hands never cross
+    handL += (juce::jlimit(area.getX() + 8.0f, area.getRight() - 8.0f, tl) - handL) * 0.18f;
+    handR += (juce::jlimit(area.getX() + 8.0f, area.getRight() - 8.0f, tr) - handR) * 0.28f;
+    if (view.root >= 0 && previewPc == view.root) pressL = true;
+    (void) pressL;
+    const float handY = kbTop - 7.0f;
+
+    g.setColour(shade);                                   // spine, vertebra by vertebra
+    for (int i = 0; i < 9; ++i)
+        g.fillRoundedRectangle(cx - 2.6f, area.getY() + 31.0f + 6.4f * (float) i, 5.2f, 4.2f, 1.6f);
+    g.setColour(bone);                                    // ribcage
+    for (int i = 0; i < 4; ++i) {
+        const float y = area.getY() + 42.0f + 7.0f * (float) i, w = 30.0f - 3.0f * (float) i;
+        juce::Path rib;
+        rib.startNewSubPath(cx - 1.5f, y);
+        rib.quadraticTo(cx - w * 0.7f, y - 4.0f, cx - w, y + 4.5f);
+        rib.startNewSubPath(cx + 1.5f, y);
+        rib.quadraticTo(cx + w * 0.7f, y - 4.0f, cx + w, y + 4.5f);
+        g.strokePath(rib, juce::PathStrokeType(1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    const float shY = area.getY() + 36.0f;                // clavicles
+    g.drawLine(cx - 27.0f, shY, cx + 27.0f, shY, 2.2f);
+    // skull
+    const float skY = area.getY() + 4.0f;
+    g.setColour(bone);
+    g.fillEllipse(cx - 13.0f, skY, 26.0f, 24.0f);
+    g.fillRoundedRectangle(cx - 8.0f, skY + 19.0f, 16.0f, 9.0f, 2.5f);
+    g.setColour(kPanel);
+    g.fillEllipse(cx - 9.0f, skY + 9.0f, 7.0f, 7.5f);
+    g.fillEllipse(cx + 2.0f, skY + 9.0f, 7.0f, 7.5f);
+    { juce::Path nose; nose.addTriangle(cx, skY + 16.5f, cx - 2.2f, skY + 21.0f, cx + 2.2f, skY + 21.0f); g.fillPath(nose); }
+    for (int i = 0; i < 4; ++i) g.fillRect(cx - 6.0f + 3.4f * (float) i, skY + 23.5f, 0.9f, 5.0f);
+    // arms: shoulder -> elbow -> hand, with joint knobs and a little hand
+    auto arm = [&](float sx, float hx, bool pressed) {
+        const float hy = handY + (pressed ? 4.0f : 0.0f);
+        const float ex = sx + (hx - sx) * 0.35f + (sx < cx ? -9.0f : 9.0f), ey = shY + (hy - shY) * 0.52f;
+        g.setColour(bone);
+        juce::Path p; p.startNewSubPath(sx, shY); p.lineTo(ex, ey); p.lineTo(hx, hy - 4.0f);
+        g.strokePath(p, juce::PathStrokeType(2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.fillEllipse(sx - 3.0f, shY - 3.0f, 6.0f, 6.0f);
+        g.fillEllipse(ex - 3.0f, ey - 3.0f, 6.0f, 6.0f);
+        g.fillRoundedRectangle(hx - 5.5f, hy - 5.0f, 11.0f, 5.0f, 2.0f);          // palm
+        for (int f = 0; f < 4; ++f) g.fillRect(hx - 5.0f + 3.0f * (float) f, hy - 0.5f, 1.7f, 4.0f);   // fingers
+    };
+    arm(cx - 27.0f, handL, pressL);
+    arm(cx + 27.0f, handR, pressR);
+
+    // --- keys (drawn after the arms so fingers rest on top of the keyboard) -----------
+    auto glow = [&](int pc) { return juce::jlimit(0.0f, 1.0f, chromaShown[(size_t) pc]); };
+    for (int i = 0; i < 7; ++i) {
+        const int pc = whitePc[i];
         const bool tonic = view.root >= 0 && pc == view.root;
         const bool diatonic = view.root >= 0 && inScale(pc, view.root, view.mode);
-        const float value = juce::jlimit(0.0f, 1.0f, chromaShown[(size_t) pc]);
-        const float h = 5.0f + (maxH - 5.0f) * std::pow(value, 0.85f);
-
-        // Ghost of the vertebra's full height so the spine reads as a structure.
-        g.setColour(kPanelHi);
-        g.fillRoundedRectangle(x, baseY - maxH, w, maxH, 3.0f);
-
-        juce::Colour c = tonic ? kAccent : (diatonic ? kBone.withAlpha(0.88f) : kBoneFaint);
-        if (view.root < 0) c = kBoneFaint;
-        if (tonic && tonicPulse > 0.0f) {
-            g.setColour(kAccent.withAlpha(0.22f * tonicPulse));
-            g.fillRoundedRectangle(x - 3.0f, baseY - h - 3.0f, w + 6.0f, h + 6.0f, 5.0f);
-        }
-        g.setColour(c);
-        g.fillRoundedRectangle(x, baseY - h, w, h, 3.0f);
-        // Intervertebral groove and knobs give each bar a bone silhouette.
-        if (h > 14.0f) {
-            g.setColour(kBg.withAlpha(0.55f));
-            g.fillRect(x + 2.0f, baseY - h * 0.5f, w - 4.0f, 1.2f);
-        }
-        g.setColour(c);
-        g.fillEllipse(x - 0.8f, baseY - h - 1.6f, 4.2f, 4.2f);
-        g.fillEllipse(x + w - 3.4f, baseY - h - 1.6f, 4.2f, 4.2f);
-
-        drawText(g, names[pc], { area.getX() + slot * (float) pc - 3.0f, baseY + 5.0f, slot + 6.0f, 13.0f }, 9.5f,
-                 tonic, tonic ? kAccent : (diatonic ? kBone : kBoneDim), juce::Justification::centred);
+        const bool sounding = previewPc == pc;
+        const juce::Rectangle<float> k(area.getX() + ww * (float) i + 0.8f, kbTop, ww - 1.6f, kbH);
+        g.setColour(diatonic ? juce::Colour(0xffd9d2bd) : juce::Colour(0xff8c8573));
+        g.fillRoundedRectangle(k, 2.0f);
+        g.setColour(kAccent.withAlpha((tonic ? 0.30f : 0.0f) + (sounding ? 0.55f : 0.0f) + 0.55f * glow(pc)));
+        g.fillRoundedRectangle(k, 2.0f);
+        if (sounding || tonic) { g.setColour(kAccent); g.drawRoundedRectangle(k.reduced(0.5f), 2.0f, 1.4f); }
+        drawText(g, names[pc], juce::Rectangle<float>(k.getX(), k.getBottom() - 14.0f, k.getWidth(), 14.0f), 9.0f, tonic, tonic ? juce::Colour(0xff17210a) : juce::Colour(0xff3a362b),
+                 juce::Justification::centred);
     }
+    for (int i = 0; i < 5; ++i) {
+        const int pc = blackPc[i];
+        const bool tonic = view.root >= 0 && pc == view.root;
+        const bool diatonic = view.root >= 0 && inScale(pc, view.root, view.mode);
+        const bool sounding = previewPc == pc;
+        const juce::Rectangle<float> k(area.getX() + ww * (float) blackSlot[i] - bw * 0.5f, kbTop, bw, bh);
+        g.setColour(diatonic ? juce::Colour(0xff4b473b) : juce::Colour(0xff211f19));
+        g.fillRoundedRectangle(k, 2.0f);
+        g.setColour(kAccent.withAlpha((tonic ? 0.35f : 0.0f) + (sounding ? 0.6f : 0.0f) + 0.6f * glow(pc)));
+        g.fillRoundedRectangle(k, 2.0f);
+        if (sounding || tonic) { g.setColour(kAccent); g.drawRoundedRectangle(k.reduced(0.5f), 2.0f, 1.4f); }
+    }
+    // hint
+    if (view.root >= 0)
+        drawText(g, hover ? "CLICK TO HEAR THE KEY" : "CLICK TO PLAY", { area.getX(), area.getY() - 1.0f, area.getWidth(), 11.0f },
+                 8.5f, hover, hover ? kAccent : kBoneFaint, juce::Justification::topRight, 0.14f);
 }
 
 void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
@@ -416,9 +523,9 @@ void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) 
         g.setColour(t == 0 ? kBone : kBoneDim);
         g.fillRect(x - 0.5f, gy - th, 1.0f, th);
     }
-    drawText(g, "-50", { gx - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
-    drawText(g, "0", { gx + gw * 0.5f - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
-    drawText(g, "+50", { gx + gw - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "-50", { gx - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "0", { gx + gw * 0.5f - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "+50", { gx + gw - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
     if (view.tuningValid) {
         const float x = gx + gw * (juce::jlimit(-50.0f, 50.0f, view.cents) + 50.0f) / 100.0f;
         juce::Path tri; tri.addTriangle(x, gy + 1.0f, x - 4.5f, gy - 11.0f, x + 4.5f, gy - 11.0f);
@@ -445,6 +552,7 @@ void TonicRecreationAudioProcessorEditor::resized() {
     };
     pauseButton.setBounds(fit(420.0f, 14.0f, 80.0f, 28.0f));
     resetButton.setBounds(fit(506.0f, 14.0f, 80.0f, 28.0f));
+    if (scene != nullptr) scene->setBounds(fit(sceneArea.getX(), sceneArea.getY(), sceneArea.getWidth(), sceneArea.getHeight()));
     openFileButton.setBounds(fit(402.0f, 332.0f, 88.0f, 28.0f));
     liveButton.setBounds(fit(496.0f, 332.0f, 84.0f, 28.0f));
 }

@@ -37,6 +37,10 @@ public:
     void changeProgramName(int, const juce::String&) override {}
     void getStateInformation(juce::MemoryBlock&) override;
     void setStateInformation(const void*, int) override;
+    // Click-to-hear preview of the detected key. Message thread requests, audio thread renders.
+    void playKeyPreview(int root,int mode);
+    int getPreviewPitchClass() const { return previewNote.load(std::memory_order_relaxed); } // -1 when silent
+    float getInputLevel() const { return inputLevel.load(std::memory_order_relaxed); }
     void requestReset() { resetRequested.store(true, std::memory_order_release); analysisReady.signal(); }
     // Called only on the message thread (drag/drop or file chooser).
     bool requestFileAnalysis(const juce::File& file);
@@ -162,8 +166,17 @@ private:
     std::array<float,12> chromaMemory {};
     std::array<float,12> keyChroma {}; // long-term (~20 s) pitch-class evidence used for the key ranking
     int keyChromaFrames=0;
+    bool holdResultsOnSilence=false; // worker-only: true while analysing a file
     int historyWrite=0, historyCount=0, samplesSinceWindow=0, silentFrames=0;
     int stableRoot=-1, stableMode=2, pendingRoot=-1, pendingMode=2, pendingCount=0;
+    void analyseBlock(juce::AudioBuffer<float>&);
+    void renderPreview(juce::AudioBuffer<float>&);
+    std::atomic<float> inputLevel {0.0f};
+    std::atomic<bool> previewRequest {false};
+    std::atomic<int> previewRoot {0}, previewMode {0}, previewNote {-1};
+    struct PreviewVoice { bool active=false; int midi=60; double phase=0.0; juce::int64 start=0, length=0; };
+    std::array<PreviewVoice,12> voices {};
+    juce::int64 previewClock=0, previewTotal=0; bool previewRunning=false; // audio thread only
     void analyseWindow();
     void updateHarmonicMask();
     void resetAnalysis();

@@ -14,8 +14,10 @@
 namespace {
 constexpr int N=16384;
 constexpr double pi=3.14159265358979323846;
-constexpr float majorProfile[12]={6.35f,2.23f,3.48f,2.33f,4.38f,4.09f,2.52f,5.19f,2.39f,3.66f,2.29f,2.88f};
-constexpr float minorProfile[12]={6.33f,2.68f,3.52f,5.38f,2.60f,3.53f,2.54f,4.75f,3.98f,2.69f,3.34f,3.17f};
+// Average of the Krumhansl-Kessler and Temperley key profiles: less sensitive to the
+// quirks of either corpus than a single profile.
+constexpr float majorProfile[12]={5.675f,2.115f,3.490f,2.165f,4.440f,4.045f,2.260f,4.845f,2.195f,3.580f,1.895f,3.440f};
+constexpr float minorProfile[12]={5.665f,2.340f,3.510f,4.940f,2.300f,3.765f,2.270f,4.625f,3.740f,2.345f,2.420f,3.585f};
 float correlation(const std::array<float,12>& c, int root, const float* profile) {
     return skell::keyProfileCorrelation(c,root,profile);
 }
@@ -89,6 +91,17 @@ bool TonicRecreationAudioProcessor::isBusesLayoutSupported(const BusesLayout& l)
 }
 void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,juce::MidiBuffer&){
     juce::ScopedNoDenormals nd;
+    // Input level for the UI meter (before the preview tone is added).
+    {
+        float peak=0.0f;
+        for(int ch=0;ch<buffer.getNumChannels();++ch) peak=std::max(peak,buffer.getMagnitude(ch,0,buffer.getNumSamples()));
+        const float prev=inputLevel.load(std::memory_order_relaxed);
+        inputLevel.store(peak>prev?peak:prev*std::pow(0.9995f,(float)buffer.getNumSamples()/1.0f*0.1f+1.0f),std::memory_order_relaxed);
+    }
+    analyseBlock(buffer);
+    renderPreview(buffer); // after analysis has copied the input, so the tone is never analysed
+}
+void TonicRecreationAudioProcessor::analyseBlock(juce::AudioBuffer<float>& buffer){
     // Refresh host tempo on the audio thread; never retain a playhead pointer.
     if (auto* playhead = getPlayHead()) {
         if (auto position = playhead->getPosition()) {
@@ -206,6 +219,7 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
     discardLiveQueue();
     resetAnalysis();
     rebuildFrequencyMap(reader->sampleRate);
+    holdResultsOnSilence=true;
     constexpr int blockSize=4096;
     juce::AudioBuffer<float> decoded(2,blockSize);
     const auto total=std::min<juce::int64>(reader->lengthInSamples,
@@ -245,6 +259,7 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
         }
         if((offset/blockSize)%128==0)juce::Thread::yield();
     }
+    holdResultsOnSilence=false;
     if (generation == fileRequestGeneration.load(std::memory_order_acquire)) {
         if (!offlineCancel.load() && offlineMode.load() && !fileError.load()) {
             fileProgress.store(1.0f);
@@ -319,7 +334,7 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
     const float meanSquare = onsetEnergySum / onsetSamples;
     if (meanSquare < 1.0e-8f) {
         ++tempoSilentHops;
-        if (tempoSilentHops == juce::roundToInt(actualOnsetRate * 2.0f)) {
+        if (tempoSilentHops == juce::roundToInt(actualOnsetRate * 2.0f) && !holdResultsOnSilence) {
             detectedBpm.store(0.0f);
             bpmConfidence.store(0.0f);
             tempoAmbiguity.store(0.0f);
@@ -473,18 +488,27 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         return {peak,period};
     };
     float selectedPeriod=static_cast<float>(bestLag);
+    float phaseWinConfidence=0.0f; // set when the faster 3:2 grid wins on phase evidence
     if(bestLag>0 && onsetCount>=juce::roundToInt(9.0f*actualOnsetRate)) {
         const float fastPeriod=bestLag*(2.0f/3.0f);
         if(fastPeriod>=minLag+1 && fastPeriod<=maxLag-1) {
             const auto slower=bestPhasePeriod(static_cast<float>(bestLag));
             const auto faster=bestPhasePeriod(fastPeriod);
             const float fastCorr=localCorrelation(juce::roundToInt(fastPeriod));
-            if ((fastCorr > 0.22f && faster.first > slower.first*1.20f
+            // Dotted-rhythm kick patterns put most lag correlation on the 3:2 alias
+            // (e.g. 100 for a true 150 BPM) and little on the true beat lag. Accept the
+            // faster grid when the phase-folded evidence alone is clearly and
+            // substantially stronger, provided its lag still shows some periodicity.
+            const bool strongPhaseWin = fastCorr > 0.06f && faster.first > 2.0f
+                && faster.first > slower.first*1.30f && faster.first > slower.first + 0.50f;
+            if (strongPhaseWin
+                || (fastCorr > 0.22f && faster.first > slower.first*1.20f
                  && faster.first > slower.first + 0.23f)
                 || (corr[(size_t)bestLag] < 0.18f
                     && skell::TempoEvidenceGate::preferThreeTwoFast(
                         localCorrelation(bestLag), fastCorr, slower.first, faster.first))) {
                 selectedPeriod=faster.second;
+                if (strongPhaseWin) phaseWinConfidence=juce::jlimit(0.0f,0.65f,0.30f+0.12f*(faster.first-slower.first));
                 bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
             }
         }
@@ -548,9 +572,10 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     tempoAmbiguity=juce::jlimit(0.0f,1.0f,std::max(half,dbl)/std::max(0.01f,corr[(size_t)bestLag]));
     const float originalConf=juce::jlimit(0.0f,1.0f,(chosenCorr-0.15f)/0.60f)
         *(1.0f-0.30f*tempoAmbiguity);
-    const float conf=strongPulse ? originalConf
+    const float conf0=strongPulse ? originalConf
         : skell::TempoEvidenceGate::weakConfidence(chosenCorr, chosenPhase)
           *(1.0f-0.30f*tempoAmbiguity);
+    const float conf=std::max(conf0,phaseWinConfidence*(1.0f-0.30f*tempoAmbiguity));
     // Ignore a single sudden octave jump when pulse evidence is ambiguous.
     const bool octaveJump = lastStableBpm > 0.0f &&
         (std::abs(bpm / lastStableBpm - 2.0f) < 0.10f ||
@@ -628,6 +653,8 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     const float rms=float(std::sqrt(energy/N));
     const float gate=state.getRawParameterValue("sensitivity")->load();
     if(rms<gate){
+        // File analysis: a silent intro/outro must not erase the result already found.
+        if(holdResultsOnSilence) return;
         const int resetFrames=skell::keySilenceResetFrames(analysisSampleRate,hopSize);
         // No fresh tonal evidence during the rest. Hide readouts while retaining
         // internal context for quick relock if the SAME song resumes shortly.
@@ -827,7 +854,9 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         ++keyChromaFrames;
         const float hopSeconds=float(hopSize/analysisSampleRate);
         const float longAlpha=juce::jlimit(1.0e-4f,0.5f,(alpha/0.18f)*hopSeconds/20.0f);
-        const float a=std::max(1.0f/float(keyChromaFrames),longAlpha);
+        // Offline files: the key of a file is its whole-file average, not its last 20 s.
+        const float a=holdResultsOnSilence ? 1.0f/float(keyChromaFrames)
+                                           : std::max(1.0f/float(keyChromaFrames),longAlpha);
         for(int i=0;i<12;++i)
             keyChroma[(size_t)i]=(1.0f-a)*keyChroma[(size_t)i]+a*c[(size_t)i]/total;
     }
@@ -983,6 +1012,64 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
         transcribedChordBass.store(-1);transcribedChordEvidence.store(0.0f);
     }
+}
+
+// ---- Click-to-hear key preview ------------------------------------------------
+// Plays the detected scale upwards and then its tonic triad. Runs entirely on the
+// audio thread from a request flag; no allocation or locking.
+void TonicRecreationAudioProcessor::playKeyPreview(int root,int mode){
+    if(root<0||root>11||(mode!=0&&mode!=1))return;
+    previewRoot.store(root,std::memory_order_relaxed);previewMode.store(mode,std::memory_order_relaxed);
+    previewRequest.store(true,std::memory_order_release);
+}
+void TonicRecreationAudioProcessor::renderPreview(juce::AudioBuffer<float>& buffer){
+    const int n=buffer.getNumSamples(),chs=buffer.getNumChannels();
+    if(previewRequest.exchange(false,std::memory_order_acq_rel)){
+        const int root=previewRoot.load(),mode=previewMode.load();
+        static const int major[8]={0,2,4,5,7,9,11,12}, minor[8]={0,2,3,5,7,8,10,12};
+        const int* sc=mode==0?major:minor;
+        for(auto& v:voices)v.active=false;
+        const double step=currentSampleRate*0.26; // one note every 260 ms
+        int vi=0;
+        for(int i=0;i<8;++i){ // ascending scale from C4-ish tonic
+            auto& v=voices[(size_t)vi++];
+            v={true,60+root+sc[i],0.0,(juce::int64)(step*i),(juce::int64)(step*0.95)};
+        }
+        const juce::int64 chordStart=(juce::int64)(step*8.4);
+        const int tri[3]={0,mode==0?4:3,7};
+        for(int i=0;i<3;++i){ // triad, held
+            auto& v=voices[(size_t)vi++];
+            v={true,48+root+tri[i]+12*(i==0?0:0),0.0,chordStart,(juce::int64)(currentSampleRate*1.8)};
+        }
+        previewClock=0;previewTotal=chordStart+(juce::int64)(currentSampleRate*1.9);
+        previewRunning=true;
+    }
+    if(!previewRunning){previewNote.store(-1,std::memory_order_relaxed);return;}
+    int shown=-1;
+    for(int i=0;i<n;++i){
+        float mix=0.0f;
+        const juce::int64 now=previewClock+i;
+        for(auto& v:voices){
+            if(!v.active)continue;
+            const juce::int64 t=now-v.start;
+            if(t<0)continue;
+            if(t>v.length){v.active=false;continue;}
+            const double f=440.0*std::pow(2.0,(v.midi-69)/12.0);
+            const float age=(float)t/(float)currentSampleRate;
+            float s=0.0f; double ph=v.phase;
+            // Soft piano-like pluck: a few decaying harmonics.
+            for(int h=1;h<=5;++h)
+                s+=std::sin((float)(2.0*pi*f*h*(double)t/currentSampleRate))*std::exp(-age*(2.0f+1.6f*(float)h))/(float)h;
+            (void)ph;
+            const float atk=std::min(1.0f,age*400.0f), rel=std::min(1.0f,(float)(v.length-t)/(float)(currentSampleRate*0.04));
+            mix+=s*atk*rel*0.16f;
+            if(v.start<=now && now-v.start<(juce::int64)(currentSampleRate*0.2)) shown=v.midi;
+        }
+        for(int ch=0;ch<chs;++ch)buffer.getWritePointer(ch)[i]+=mix;
+    }
+    previewNote.store(shown>=0?shown%12:previewNote.load(),std::memory_order_relaxed);
+    previewClock+=n;
+    if(previewClock>=previewTotal){previewRunning=false;for(auto& v:voices)v.active=false;previewNote.store(-1,std::memory_order_relaxed);}
 }
 juce::AudioProcessorEditor* TonicRecreationAudioProcessor::createEditor(){return new TonicRecreationAudioProcessorEditor(*this);}
 void TonicRecreationAudioProcessor::getStateInformation(juce::MemoryBlock& dest){auto xml=state.copyState().createXml();copyXmlToBinary(*xml,dest);}
