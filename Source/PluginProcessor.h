@@ -132,7 +132,6 @@ private:
     std::array<float,windowSize/2> tonalPower {};
     std::array<float,windowSize/2> harmonicMask {};
     int harmonicWrite = 0, harmonicCount = 0;
-    std::array<int,60*3> noteBins {};
     std::array<float,60> noteFrequencies {};
     int tempoHopSamples=441;
     float actualOnsetRate=100.0f;
@@ -156,8 +155,13 @@ private:
     int lastProgressionRoot=-1, lastProgressionKind=-1;
     int progressionEvents=0;
     int heldChordRoot=-1, heldChordKind=-1, chordHold=0;
-    float tuningCentsMemory=0.0f;
+    float tuningCentsMemory=0.0f, tuningHistMass=0.0f;
+    std::array<float,100> tuningHist {}; // decayed histogram of peak deviations from the 440 Hz grid, 1 cent/bin
+    int tuningFrames=0;
+    bool tuningApplied=false; // worker-only: tuned note grid in use
     std::array<float,12> chromaMemory {};
+    std::array<float,12> keyChroma {}; // long-term (~20 s) pitch-class evidence used for the key ranking
+    int keyChromaFrames=0;
     int historyWrite=0, historyCount=0, samplesSinceWindow=0, silentFrames=0;
     int stableRoot=-1, stableMode=2, pendingRoot=-1, pendingMode=2, pendingCount=0;
     void analyseWindow();

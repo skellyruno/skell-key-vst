@@ -1,9 +1,12 @@
 #pragma once
 #include <JuceHeader.h>
+#include <array>
 #include "PluginProcessor.h"
 
-class NeonButtonLookAndFeel;
+class SkellLookAndFeel;
 
+// Skell Key editor. Everything is drawn in a fixed 600 x 380 design space and
+// scaled to the window, so the plugin can be resized freely (fixed aspect).
 class TonicRecreationAudioProcessorEditor final : public juce::AudioProcessorEditor,
     private juce::Timer, public juce::FileDragAndDropTarget
 {
@@ -16,15 +19,44 @@ public:
     void fileDragEnter(const juce::StringArray&, int, int) override;
     void fileDragExit(const juce::StringArray&) override;
     void filesDropped(const juce::StringArray&, int, int) override;
+
+    static constexpr int designWidth = 600, designHeight = 380;
+
 private:
     void timerCallback() override;
     void loadFile(const juce::File&);
+    float scale() const noexcept { return (float) getWidth() / (float) designWidth; }
+
+    // --- painting helpers (all in design-space units) ---
+    void paintHeader(juce::Graphics&);
+    void paintKeyCard(juce::Graphics&);
+    void paintSpine(juce::Graphics&, juce::Rectangle<float> area);
+    void paintTempoCard(juce::Graphics&);
+    void paintReferenceCard(juce::Graphics&);
+    void paintFooter(juce::Graphics&);
+
     TonicRecreationAudioProcessor& processor;
-    juce::Label brand, keyLabel, keyHint, candidates, chord, bpm, bpmHint, referenceA, referenceHint, fileStatus;
     juce::TextButton pauseButton {"Pause"}, resetButton {"Reset"};
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
     std::unique_ptr<juce::FileChooser> fileChooser;
-    std::unique_ptr<NeonButtonLookAndFeel> buttonLook;
+    std::unique_ptr<SkellLookAndFeel> look;
+
+    // Display state, refreshed by the timer on the message thread.
+    struct View {
+        int root = -1, mode = 2;
+        juce::String keyText {"Listening..."}, keyHint, candidates, chordText;
+        float keyConfidence = 0.0f;
+        juce::String bpmText {"--"}, bpmHint {"Waiting for rhythm"};
+        float bpmConfidence = 0.0f;
+        juce::String refText {"--"}, refHint {"Detecting tuning"};
+        float cents = 0.0f; bool tuningValid = false;
+        juce::String status;
+        float progress = 0.0f; bool busy = false;
+    } view;
+    std::array<float,12> chromaTarget {}, chromaShown {};
+    float tonicPulse = 0.0f;
+    int lastRoot = -2;
+    juce::TooltipWindow tooltipWindow {this, 600};
     bool dragHover = false;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TonicRecreationAudioProcessorEditor)
 };

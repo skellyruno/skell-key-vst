@@ -2,244 +2,477 @@
 #include <array>
 #include <cmath>
 
+// ---------------------------------------------------------------------------
+//  Skell Key -- skeleton-key identity.
+//  Warm "ossuary" black, bone-white type, a single ecto-green accent. The key
+//  mark has a skull for a bow, and the 12 pitch classes are drawn as a spine of
+//  vertebrae that rises and falls with the music.
+// ---------------------------------------------------------------------------
 namespace {
-constexpr auto bg = 0xff090e0a;
-constexpr auto card = 0xff141e16;
-constexpr auto border = 0xff334a36;
-constexpr auto primary = 0xfff0ffec;
-constexpr auto muted = 0xff9db49b;
-constexpr auto neon = 0xffb2ff52;
-constexpr auto darkNeon = 0xff283c20;
-const char* notes[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-const char* chordKinds[] = {"maj","min","dim","aug","7","maj7","min7","m7b5"};
-void labelStyle(juce::Label& label, float fontSize, uint32_t colour, bool bold=false,
-                juce::Justification justification=juce::Justification::centredLeft) {
-    label.setColour(juce::Label::textColourId,juce::Colour(colour));
-    label.setFont(juce::Font(fontSize, bold ? juce::Font::bold : juce::Font::plain));
-    label.setJustificationType(justification);
-    label.setMinimumHorizontalScale(0.7f);
+const juce::Colour kBg      (0xff0b0a09);   // warm black
+const juce::Colour kPanel   (0xff131210);
+const juce::Colour kPanelHi (0xff1b1915);
+const juce::Colour kLine    (0xff2f2b23);
+const juce::Colour kBone    (0xffe9e1cc);   // ivory bone
+const juce::Colour kBoneDim (0xff9b937d);
+const juce::Colour kBoneFaint(0xff4d483c);
+const juce::Colour kAccent  (0xffb6f56a);   // ecto green
+
+const char* const sharpNames[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+const char* const flatNames [12] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
+const char* const chordKinds[] = {"maj","min","dim","aug","7","maj7","min7","m7b5"};
+
+juce::Font makeFont(float size, bool bold = false, float kerning = 0.0f) {
+    juce::Font f(juce::FontOptions(size, bold ? juce::Font::bold : juce::Font::plain));
+    return kerning != 0.0f ? f.withExtraKerningFactor(kerning) : f;
+}
+float textWidth(const juce::Font& f, const juce::String& s) {
+    juce::GlyphArrangement ga;
+    ga.addLineOfText(f, s, 0.0f, 0.0f);
+    return ga.getBoundingBox(0, -1, true).getWidth();
+}
+void drawText(juce::Graphics& g, const juce::String& text, juce::Rectangle<float> r, float size,
+              bool bold, juce::Colour colour,
+              juce::Justification j = juce::Justification::centredLeft, float kerning = 0.0f) {
+    g.setColour(colour);
+    g.setFont(makeFont(size, bold, kerning));
+    g.drawText(text, r, j, true);
 }
 bool isAudioFile(const juce::String& path) {
-    const auto ext=juce::File(path).getFileExtension().toLowerCase();
+    const auto ext = juce::File(path).getFileExtension().toLowerCase();
     return juce::StringArray {".wav",".aiff",".aif",".flac",".ogg",".mp3"}.contains(ext);
 }
+
+// A card with corner "bone brackets" instead of a full, heavy frame.
+void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
+    g.setColour(kPanel);  g.fillRect(r);
+    g.setColour(kLine);   g.drawRect(r, 1.0f);
+    const float L = 9.0f;
+    g.setColour(kBoneDim.withAlpha(0.75f));
+    const auto a = r.getTopLeft(), b = r.getTopRight(), c = r.getBottomLeft(), d = r.getBottomRight();
+    juce::Path p;
+    p.startNewSubPath(a.x, a.y + L); p.lineTo(a.x, a.y); p.lineTo(a.x + L, a.y);
+    p.startNewSubPath(b.x - L, b.y); p.lineTo(b.x, b.y); p.lineTo(b.x, b.y + L);
+    p.startNewSubPath(c.x, c.y - L); p.lineTo(c.x, c.y); p.lineTo(c.x + L, c.y);
+    p.startNewSubPath(d.x - L, d.y); p.lineTo(d.x, d.y); p.lineTo(d.x, d.y - L);
+    g.strokePath(p, juce::PathStrokeType(1.4f));
 }
 
+// Skull-bowed skeleton key, about 74 x 30 units.
+void drawKeyMark(juce::Graphics& g, float x, float y, juce::Colour bone, juce::Colour hole) {
+    g.setColour(bone);
+    g.fillEllipse(x + 1.0f, y + 0.0f, 25.0f, 23.0f);                     // cranium
+    g.fillRoundedRectangle(x + 6.5f, y + 17.0f, 14.0f, 11.0f, 3.0f);     // jaw
+    g.fillRoundedRectangle(x + 25.0f, y + 10.5f, 48.0f, 4.2f, 1.6f);     // shaft
+    g.fillRoundedRectangle(x + 33.0f, y + 7.0f, 3.2f, 11.5f, 1.2f);      // collar
+    g.fillRect(x + 56.0f, y + 14.0f, 4.2f, 9.0f);                        // bit teeth
+    g.fillRect(x + 63.0f, y + 14.0f, 4.2f, 6.0f);
+    g.fillRect(x + 69.5f, y + 14.0f, 3.5f, 10.0f);
+    g.setColour(hole);
+    g.fillEllipse(x + 6.2f, y + 8.4f, 6.4f, 6.8f);                       // eye sockets
+    g.fillEllipse(x + 14.6f, y + 8.4f, 6.4f, 6.8f);
+    juce::Path nose; nose.addTriangle(x + 13.5f, y + 15.0f, x + 11.6f, y + 19.0f, x + 15.4f, y + 19.0f);
+    g.fillPath(nose);
+    for (int i = 0; i < 3; ++i)                                           // teeth gaps
+        g.fillRect(x + 9.6f + 3.4f * (float) i, y + 22.0f, 1.0f, 5.0f);
+}
 
-// Flat, squared controls with host-independent hover and focus treatment.
-class NeonButtonLookAndFeel final : public juce::LookAndFeel_V4 {
+// Row of key-bit teeth used as a meter. Filled teeth show the value.
+void drawTeeth(juce::Graphics& g, juce::Rectangle<float> r, float value, int count = 10) {
+    static const float heights[10] = {0.55f, 0.85f, 0.65f, 1.0f, 0.5f, 0.9f, 0.7f, 1.0f, 0.6f, 0.8f};
+    const float slot = r.getWidth() / (float) count, w = slot * 0.62f;
+    const int lit = juce::jlimit(0, count, juce::roundToInt(value * (float) count));
+    for (int i = 0; i < count; ++i) {
+        const float h = r.getHeight() * heights[i % 10];
+        const juce::Rectangle<float> t(r.getX() + slot * (float) i, r.getBottom() - h, w, h);
+        g.setColour(i < lit ? kAccent : kBoneFaint.withAlpha(0.8f));
+        g.fillRect(t);
+    }
+}
+
+bool inScale(int pc, int root, int mode) {
+    static const bool maj[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
+    static const bool min[12] = {1,0,1,1,0,1,0,1,1,0,1,0};
+    const int rel = ((pc - root) % 12 + 12) % 12;
+    return mode == 0 ? maj[rel] : min[rel];
+}
+} // namespace
+
+// Flat, squared bone buttons.
+class SkellLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
-    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
-                              const juce::Colour& backgroundColour,
+    SkellLookAndFeel() {
+        setColour(juce::TextButton::buttonColourId, kPanelHi);
+        setColour(juce::TextButton::textColourOffId, kBone);
+        setColour(juce::TextButton::textColourOnId, kBone);
+    }
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
                               bool highlighted, bool down) override {
         auto r = button.getLocalBounds().toFloat().reduced(0.5f);
-        auto fill = backgroundColour;
-        if (down) fill = juce::Colour(0xff476b33);
-        else if (highlighted) fill = fill.brighter(0.18f);
-        g.setColour(fill);
-        g.fillRect(r);
-        g.setColour(button.hasKeyboardFocus(true) ? juce::Colour(neon)
-                    : (highlighted ? juce::Colour(0xff87cb4a) : juce::Colour(border)));
+        auto fill = kPanelHi;
+        if (down) fill = juce::Colour(0xff3a4a22);
+        else if (highlighted) fill = juce::Colour(0xff26231c);
+        g.setColour(fill); g.fillRect(r);
+        const bool focus = button.hasKeyboardFocus(true);
+        g.setColour(focus ? kAccent : (highlighted ? kBoneDim : kLine));
         g.drawRect(r, 1.0f);
         if (button.getToggleState()) {
-            g.setColour(juce::Colour(neon));
-            g.fillRect(r.getX(), r.getY(), 2.0f, r.getHeight());
+            g.setColour(kAccent);
+            g.fillRect(r.getX(), r.getY(), 2.5f, r.getHeight());
         }
     }
-    void drawButtonText(juce::Graphics& g, juce::TextButton& button,
-                        bool /*highlighted*/, bool /*down*/) override {
-        g.setColour(button.isEnabled() ? juce::Colour(primary) : juce::Colour(muted));
-        g.setFont(juce::Font(12.0f, juce::Font::bold));
-        g.drawFittedText(button.getButtonText(), button.getLocalBounds().reduced(3,1),
-                         juce::Justification::centred, 1, 0.8f);
+    juce::Font getTextButtonFont(juce::TextButton&, int buttonHeight) override {
+        return makeFont(juce::jmin(12.5f, (float) buttonHeight * 0.46f), true, 0.06f);
+    }
+    void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) override {
+        g.setColour(button.isEnabled() ? kBone : kBoneDim);
+        g.setFont(getTextButtonFont(button, button.getHeight()));
+        g.drawFittedText(button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
+                         juce::Justification::centred, 1, 0.85f);
     }
 };
 
 TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor& p)
   : AudioProcessorEditor(&p), processor(p) {
-    setSize(525,313);
-    buttonLook = std::make_unique<NeonButtonLookAndFeel>();
-    for (auto* button : { &pauseButton, &resetButton, &openFileButton, &liveButton })
-        button->setLookAndFeel(buttonLook.get());
-    brand.setText("SKELL   /   KEY ANALYZER", juce::dontSendNotification);
-    labelStyle(brand,13.5f,primary,true);
-    labelStyle(keyLabel,31.0f,primary,true,juce::Justification::centred);
-    labelStyle(keyHint,11.0f,muted,false,juce::Justification::centred);
-    labelStyle(candidates,11.0f,muted,false,juce::Justification::centred);
-    labelStyle(chord,11.0f,primary,false,juce::Justification::centred);
-    labelStyle(bpm,23.0f,neon,true,juce::Justification::centred);
-    labelStyle(bpmHint,10.0f,muted,false,juce::Justification::centred);
-    labelStyle(referenceA,23.0f,neon,true,juce::Justification::centred);
-    labelStyle(referenceHint,10.0f,muted,false,juce::Justification::centred);
-    labelStyle(fileStatus,11.0f,muted);
-    fileStatus.setTooltip("Drop audio anywhere to analyze. File input takes priority over live input.");
-    for (auto* label : { &brand, &keyLabel, &keyHint, &candidates, &chord, &bpm, &bpmHint, &referenceA, &referenceHint, &fileStatus })
-        label->setInterceptsMouseClicks(false, false);
-    for(auto* c : std::array<juce::Component*,14>{&brand,&keyLabel,&keyHint,&candidates,&chord,
-        &bpm,&bpmHint,&referenceA,&referenceHint,&fileStatus,&pauseButton,&resetButton,
-        &openFileButton,&liveButton}) addAndMakeVisible(c);
-    for(auto* b : {&pauseButton,&resetButton,&openFileButton,&liveButton}) {
-        b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff202e21));
-        b->setColour(juce::TextButton::textColourOffId,juce::Colour(primary));
+    setTitle("Skell Key");
+    setSize(designWidth, designHeight);
+    setResizable(true, true);
+    setResizeLimits(designWidth * 4 / 5, designHeight * 4 / 5, designWidth * 2, designHeight * 2);
+    if (auto* c = getConstrainer()) c->setFixedAspectRatio((double) designWidth / (double) designHeight);
+
+    look = std::make_unique<SkellLookAndFeel>();
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) {
+        b->setLookAndFeel(look.get());
+        addAndMakeVisible(b);
     }
-    openFileButton.setColour(juce::TextButton::buttonColourId,juce::Colour(0xff365c2b));
-    liveButton.setColour(juce::TextButton::buttonColourId,juce::Colour(0xff243a24));
-    resetButton.setColour(juce::TextButton::buttonColourId,juce::Colour(0xff28372a));
-    openFileButton.setEnabled(true);
     pauseButton.setClickingTogglesState(true);
-    pauseButton.onClick=[this] { processor.setPaused(pauseButton.getToggleState());
-        pauseButton.setButtonText(pauseButton.getToggleState()?"Resume":"Pause"); };
-    resetButton.onClick=[this] { if(processor.isOfflineMode()) processor.returnToLive();
-        else processor.requestReset(); timerCallback(); };
-    openFileButton.onClick=[this] {
-        fileChooser=std::make_unique<juce::FileChooser>("Analyze an audio file",juce::File{},
-                                  "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
-        juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
-        fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
-                                juce::FileBrowserComponent::canSelectFiles,
-            [safe](const juce::FileChooser& chooser) {
-                if(safe != nullptr) safe->loadFile(chooser.getResult());
-            });
+    pauseButton.setTooltip("Freeze analysis of live input");
+    resetButton.setTooltip("Forget everything heard so far and start again");
+    openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
+    liveButton.setTooltip("Leave file mode and analyze the DAW input again");
+
+    pauseButton.onClick = [this] {
+        processor.setPaused(pauseButton.getToggleState());
+        pauseButton.setButtonText(pauseButton.getToggleState() ? "Resume" : "Pause");
     };
-    liveButton.onClick=[this] { processor.returnToLive();
-        pauseButton.setToggleState(false,juce::dontSendNotification);
-        pauseButton.setButtonText("Pause"); timerCallback(); };
-    startTimerHz(6); timerCallback();
+    resetButton.onClick = [this] {
+        if (processor.isOfflineMode()) processor.returnToLive(); else processor.requestReset();
+        timerCallback();
+    };
+    openFileButton.onClick = [this] {
+        fileChooser = std::make_unique<juce::FileChooser>("Analyze an audio file", juce::File{},
+                                                          "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
+        juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
+        fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) { if (safe != nullptr) safe->loadFile(chooser.getResult()); });
+    };
+    liveButton.onClick = [this] {
+        processor.returnToLive();
+        pauseButton.setToggleState(false, juce::dontSendNotification);
+        pauseButton.setButtonText("Pause");
+        timerCallback();
+    };
+    startTimerHz(20);
+    timerCallback();
 }
-TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor(){
+
+TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
-    for (auto* button : { &pauseButton, &resetButton, &openFileButton, &liveButton })
-        button->setLookAndFeel(nullptr);
-    buttonLook.reset();
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setLookAndFeel(nullptr);
+    look.reset();
 }
 
 void TonicRecreationAudioProcessorEditor::timerCallback() {
-    const bool offline=processor.isOfflineMode();
-    const bool startingFile = offline && processor.isFileBusy()
-        && processor.getFileAnalyzedSeconds() < 0.25f;
-    const int root=startingFile ? -1 : processor.getDetectedRoot(),mode=processor.getDetectedMode();
-    keyLabel.setText(root<0 ? (startingFile ? "Analyzing..." : offline && !processor.isFileBusy()?"No key found":"Listening...")
-       : juce::String(notes[root])+(mode==0?" major":" minor"),juce::dontSendNotification);
-    const int confidence=juce::roundToInt(processor.getConfidence()*100.0f);
-    keyHint.setText(root<0?"Waiting for musical input":
-        "Key evidence  " + juce::String(confidence) + "%", juce::dontSendNotification);
-    juce::String keys;
-    for(int i=0;i<3 && !startingFile;++i) {
-        const int r=processor.getRankedRoot(i), m=processor.getRankedMode(i);
-        if(r<0) continue;
-        if(keys.isNotEmpty()) keys+="  /  ";
-        keys+=juce::String(notes[r])+(m==0?" maj":" min");
+    const bool offline = processor.isOfflineMode();
+    const bool startingFile = offline && processor.isFileBusy() && processor.getFileAnalyzedSeconds() < 0.25f;
+    const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
+    const char* const* names = flats ? flatNames : sharpNames;
+
+    const int root = startingFile ? -1 : processor.getDetectedRoot(), mode = processor.getDetectedMode();
+    view.root = root; view.mode = mode;
+    if (root < 0) {
+        view.keyText = startingFile ? "Analyzing..."
+                     : (offline && !processor.isFileBusy() ? "No key found" : "Listening...");
+        view.keyHint = "Waiting for musical input";
+        view.keyConfidence = 0.0f;
+    } else {
+        view.keyText = juce::String(names[root]) + (mode == 0 ? " major" : " minor");
+        view.keyConfidence = juce::jlimit(0.0f, 1.0f, processor.getConfidence());
+        view.keyHint = "Key evidence  " + juce::String(juce::roundToInt(view.keyConfidence * 100.0f)) + "%";
     }
-    candidates.setText(keys.isEmpty()?"Likely keys will appear here":keys,juce::dontSendNotification);
-    const int newRoot=startingFile ? -1 : processor.getTranscribedChordRoot();
-    const int newQuality=processor.getTranscribedChordQuality();
-    const int cr=(newRoot>=0) ? newRoot : (startingFile ? -1 : processor.getChordRoot());
-    const int kind=(newRoot>=0) ? newQuality : processor.getChordKind();
-    const int inversionBass=(newRoot>=0) ? processor.getTranscribedChordBass() : -1;
-    juce::String chordText="Chord  --";
-    if(cr>=0 && cr<12 && kind>=0 && kind<8){
-        chordText="Chord  "+juce::String(notes[cr])+" "+chordKinds[kind];
-        if(inversionBass>=0 && inversionBass<12 && inversionBass!=cr)
-            chordText+="/"+juce::String(notes[inversionBass]);
+    juce::String also;
+    int shown = 0;
+    for (int i = 0; i < 3 && shown < 2 && !startingFile && root >= 0; ++i) {
+        const int r = processor.getRankedRoot(i), m = processor.getRankedMode(i);
+        if (r < 0 || (r == root && m == mode)) continue;
+        if (also.isNotEmpty()) also += "   /   ";
+        also += juce::String(names[r]) + (m == 0 ? " maj" : " min");
+        ++shown;
     }
-    chord.setText(chordText,juce::dontSendNotification);
-    const float detected=startingFile ? 0.0f : processor.getDetectedBpm();
-    const float bConf=startingFile ? 0.0f : processor.getBpmConfidence();
-    bpm.setText(detected>0?juce::String(detected,1):"--",juce::dontSendNotification);
-    bpmHint.setText(detected>0?"Confidence "+juce::String(juce::roundToInt(bConf*100.0f))+"%":"Waiting for rhythm",
-        juce::dontSendNotification);
-    const float hz=processor.getDetectedTuningHz(),tConf=startingFile ? 0.0f : processor.getTuningConfidence();
-    const bool valid=tConf>=0.03f && std::isfinite(hz) && hz>0;
-    referenceA.setText(valid?juce::String(hz,1):"--",juce::dontSendNotification);
-    const float cents=valid?1200.0f*std::log2(hz/440.0f):0.0f;
-    referenceHint.setText(valid ? (juce::String(cents>=0?"+":"")+juce::String(cents,1)+" cents"):
-        "Detecting tuning",juce::dontSendNotification);
+    view.candidates = also.isEmpty() ? "Runner-up keys appear here" : "Also likely   " + also;
+
+    const int newRoot = startingFile ? -1 : processor.getTranscribedChordRoot();
+    const int newQuality = processor.getTranscribedChordQuality();
+    const int cr = (newRoot >= 0) ? newRoot : (startingFile ? -1 : processor.getChordRoot());
+    const int kind = (newRoot >= 0) ? newQuality : processor.getChordKind();
+    const int bass = (newRoot >= 0) ? processor.getTranscribedChordBass() : -1;
+    view.chordText = "Chord   --";
+    if (cr >= 0 && cr < 12 && kind >= 0 && kind < 8) {
+        view.chordText = "Chord   " + juce::String(names[cr]) + " " + chordKinds[kind];
+        if (bass >= 0 && bass < 12 && bass != cr) view.chordText += "/" + juce::String(names[bass]);
+    }
+
+    const float bpmValue = startingFile ? 0.0f : processor.getDetectedBpm();
+    view.bpmConfidence = startingFile ? 0.0f : juce::jlimit(0.0f, 1.0f, processor.getBpmConfidence());
+    view.bpmText = bpmValue > 0 ? juce::String(bpmValue, 1) : "--";
+    view.bpmHint = bpmValue > 0 ? "Confidence  " + juce::String(juce::roundToInt(view.bpmConfidence * 100.0f)) + "%"
+                                : "Waiting for rhythm";
+
+    const float hz = processor.getDetectedTuningHz();
+    const float tConf = startingFile ? 0.0f : processor.getTuningConfidence();
+    view.tuningValid = tConf >= 0.03f && std::isfinite(hz) && hz > 0.0f;
+    view.cents = view.tuningValid ? 1200.0f * std::log2(hz / 440.0f) : 0.0f;
+    view.refText = view.tuningValid ? juce::String(hz, 1) : "--";
+    view.refHint = view.tuningValid ? juce::String(view.cents >= 0 ? "+" : "") + juce::String(view.cents, 1) + " cents"
+                                    : "Detecting tuning";
+
     juce::String status;
-    if(offline){
-        status=processor.getFileName();
-        if(processor.fileFailed())status+="  -  Cannot decode";
-        else if(processor.isFileBusy())
-            status+="  -  "+juce::String(juce::roundToInt(100.0f*processor.getFileProgress()))+"%";
-        else status+="  -  Complete";
-    } else status=processor.hasLiveInput()?"Live input active":"Drop audio anywhere to analyze";
-    fileStatus.setTooltip(status);
-    if(status.length()>34)status=status.substring(0,31)+"...";
-    fileStatus.setText(status,juce::dontSendNotification);
-    if(offline && processor.isFileBusy())repaint();
+    view.busy = offline && processor.isFileBusy();
+    view.progress = juce::jlimit(0.0f, 1.0f, processor.getFileProgress());
+    if (offline) {
+        status = processor.getFileName();
+        if (processor.fileFailed()) status += "  -  Cannot decode";
+        else if (processor.isFileBusy()) status += "  -  " + juce::String(juce::roundToInt(100.0f * view.progress)) + "%";
+        else status += "  -  Complete";
+    } else {
+        status = processor.hasLiveInput() ? "Live input active" : "Drop audio anywhere to analyze";
+    }
+    view.status = status;
+
+    // Spine: ease toward the live short-term chroma so vertebrae move smoothly.
+    float peak = 1.0e-6f;
+    for (int i = 0; i < 12; ++i) peak = juce::jmax(peak, processor.getChroma(i));
+    for (int i = 0; i < 12; ++i) {
+        chromaTarget[(size_t) i] = (root < 0 && !offline) ? 0.0f : processor.getChroma(i) / peak;
+        chromaShown[(size_t) i] += (chromaTarget[(size_t) i] - chromaShown[(size_t) i]) * 0.35f;
+    }
+    tonicPulse = juce::jmax(0.0f, tonicPulse - 0.08f);
+    if (root != lastRoot) { tonicPulse = 1.0f; lastRoot = root; }
+    repaint();
 }
 
+// --------------------------------------------------------------------------- painting
 void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
-    g.fillAll(juce::Colour(bg));
-    // Coordinate system is the original compact design; all painting scales to 525 x 313.
-    g.addTransform(juce::AffineTransform::scale(525.0f / 570.0f, 313.0f / 340.0f));
-    auto box=[&](float x,float y,float w,float h){
-        juce::Rectangle<float> r(x,y,w,h);
-        g.setColour(juce::Colour(card));g.fillRect(r);
-        g.setColour(juce::Colour(border));g.drawRect(r,1.0f);
-    };
-    g.setColour(juce::Colour(neon)); g.fillRect(15.0f,16.0f,3.0f,25.0f);
-    g.setColour(juce::Colour(border));g.drawLine(14,50,556,50,1.0f);
-    g.setColour(juce::Colour(neon));g.fillRect(14.0f,49.0f,108.0f,2.0f);
-    box(14,59,542,133);
-    g.setColour(juce::Colour(darkNeon)); g.fillRect(16.0f,61.0f,3.0f,129.0f);
-    g.setColour(juce::Colour(muted));g.setFont(juce::Font(10.0f,juce::Font::bold));
-    g.drawText("DETECTED KEY",juce::Rectangle<int>(24,68,522,16),juce::Justification::centred);
-    g.setColour(juce::Colour(border));g.drawLine(30,153,540,153,1.0f);
-    box(14,201,264,75);box(286,201,270,75);
-    g.setColour(juce::Colour(darkNeon));g.fillRect(16.0f,203.0f,3.0f,71.0f);
-    g.fillRect(288.0f,203.0f,3.0f,71.0f);
-    g.setColour(juce::Colour(muted));g.setFont(juce::Font(10.0f,juce::Font::bold));
-    g.drawText("TEMPO",juce::Rectangle<int>(24,206,244,15),juce::Justification::centred);
-    g.drawText("REFERENCE A",juce::Rectangle<int>(296,206,250,15),juce::Justification::centred);
-    g.setColour(juce::Colour(neon));
-    g.fillRect(juce::Rectangle<float>(23,211,3,17));
-    g.fillRect(juce::Rectangle<float>(295,211,3,17));
-    box(14,285,542,43);
-    if(processor.isOfflineMode() && processor.isFileBusy()) {
-        g.setColour(juce::Colour(neon));
-        g.fillRect(juce::Rectangle<float>(17,326,
-            536*juce::jlimit(0.0f,1.0f,processor.getFileProgress()),2));
-    }
-    if(dragHover){
-        g.setColour(juce::Colour(0xee0b170d));
-        g.fillRect(juce::Rectangle<float>(7,7,556,326));
-        g.setColour(juce::Colour(neon));
-        g.drawRect(juce::Rectangle<float>(9,9,552,322),2.0f);
-        g.setColour(juce::Colour(primary));g.setFont(juce::Font(22.0f,juce::Font::bold));
-        g.drawText("DROP AUDIO TO ANALYZE",juce::Rectangle<int>(0,0,570,340),juce::Justification::centred);
+    g.fillAll(kBg);
+    g.addTransform(juce::AffineTransform::scale(scale()));
+    paintHeader(g);
+    paintKeyCard(g);
+    paintTempoCard(g);
+    paintReferenceCard(g);
+    paintFooter(g);
+
+    if (dragHover) {
+        const juce::Rectangle<float> all(0.0f, 0.0f, (float) designWidth, (float) designHeight);
+        g.setColour(kBg.withAlpha(0.93f)); g.fillRect(all);
+        g.setColour(kAccent);
+        const juce::Rectangle<float> frame = all.reduced(10.0f);
+        juce::Path dashes; dashes.addRectangle(frame);
+        juce::Path stroked;
+        const float pattern[] = {9.0f, 6.0f};
+        juce::PathStrokeType(2.0f).createDashedStroke(stroked, dashes, pattern, 2);
+        g.fillPath(stroked);
+        drawKeyMark(g, all.getCentreX() - 37.0f, 128.0f, kBone, kBg);
+        drawText(g, "DROP AUDIO TO UNLOCK", all.withTrimmedTop(140.0f).withHeight(70.0f), 26.0f, true, kBone,
+                 juce::Justification::centred, 0.12f);
+        drawText(g, "wav  aiff  flac  ogg  mp3", all.withTrimmedTop(212.0f).withHeight(24.0f), 12.0f, false, kBoneDim,
+                 juce::Justification::centred, 0.1f);
     }
 }
-void TonicRecreationAudioProcessorEditor::resized(){
-    auto fit = [](int x, int y, int w, int h) {
-        return juce::Rectangle<int>(juce::roundToInt(x * 525.0f / 570.0f),
-            juce::roundToInt(y * 313.0f / 340.0f),
-            juce::roundToInt(w * 525.0f / 570.0f),
-            juce::roundToInt(h * 313.0f / 340.0f));
-    };
-    brand.setBounds(fit(25,12,300,32));
-    pauseButton.setBounds(fit(408,15,68,25));resetButton.setBounds(fit(482,15,74,25));
-    keyLabel.setBounds(fit(32,88,506,45));keyHint.setBounds(fit(35,131,500,18));
-    candidates.setBounds(fit(23,157,520,17));chord.setBounds(fit(22,176,526,15));
-    bpm.setBounds(fit(30,223,230,31));bpmHint.setBounds(fit(30,252,230,16));
-    referenceA.setBounds(fit(302,223,236,31));referenceHint.setBounds(fit(302,252,236,16));
-    fileStatus.setBounds(fit(24,294,258,24));
-    openFileButton.setBounds(fit(297,294,119,25));
-    liveButton.setBounds(fit(423,294,123,25));
+
+void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
+    drawKeyMark(g, 16.0f, 11.0f, kBone, kBg);
+    drawText(g, "SKELL KEY", { 100.0f, 9.0f, 220.0f, 26.0f }, 21.0f, true, kBone,
+             juce::Justification::centredLeft, 0.16f);
+    drawText(g, "KEY   /   TEMPO   /   TUNING", { 101.0f, 33.0f, 240.0f, 14.0f }, 9.0f, false, kBoneDim,
+             juce::Justification::centredLeft, 0.18f);
+    // A spine as the rule under the header: a few lit vertebrae, then dim ones.
+    const float y = 55.0f;
+    const int n = 48;
+    const float slot = (float) (designWidth - 28) / (float) n;
+    for (int i = 0; i < n; ++i) {
+        const bool lit = i < 6;
+        g.setColour(lit ? kAccent : kBoneFaint.withAlpha(0.9f));
+        g.fillRoundedRectangle(14.0f + slot * (float) i, y, slot - 2.2f, lit ? 3.0f : 2.0f, 1.0f);
+    }
 }
-bool TonicRecreationAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files){
-    for(const auto& file:files)if(isAudioFile(file))return true;
+
+void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
+    const juce::Rectangle<float> card(14.0f, 66.0f, 572.0f, 160.0f);
+    drawCard(g, card);
+    drawText(g, "DETECTED KEY", { 30.0f, 76.0f, 200.0f, 14.0f }, 9.0f, true, kBoneDim,
+             juce::Justification::centredLeft, 0.2f);
+
+    // Big key: tonic in bone, mode in dim bone, so the pitch reads first.
+    if (view.root >= 0) {
+        const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
+        const juce::String tonic = (flats ? flatNames : sharpNames)[view.root];
+        const auto tonicFont = makeFont(60.0f, true);
+        drawText(g, tonic, { 28.0f, 90.0f, 200.0f, 70.0f }, 60.0f, true, kBone);
+        const float w = textWidth(tonicFont, tonic);
+        drawText(g, view.mode == 0 ? "major" : "minor", { 28.0f + w + 10.0f, 117.0f, 140.0f, 34.0f }, 24.0f,
+                 false, kAccent);
+    } else {
+        drawText(g, view.keyText, { 28.0f, 96.0f, 270.0f, 56.0f }, 32.0f, true, kBoneDim);
+    }
+    drawText(g, view.keyHint, { 30.0f, 158.0f, 170.0f, 14.0f }, 11.0f, false, kBoneDim);
+    drawTeeth(g, { 30.0f, 175.0f, 140.0f, 11.0f }, view.keyConfidence);
+    drawText(g, view.candidates, { 30.0f, 193.0f, 270.0f, 14.0f }, 11.0f, false, kBoneDim);
+    drawText(g, view.chordText, { 30.0f, 208.0f, 270.0f, 14.0f }, 11.0f, true, kBone);
+
+    // Divider between the readout and the spine.
+    g.setColour(kLine);
+    g.drawLine(310.0f, 78.0f, 310.0f, 214.0f, 1.0f);
+    paintSpine(g, { 326.0f, 76.0f, 248.0f, 146.0f });
+}
+
+void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Rectangle<float> area) {
+    const float slot = area.getWidth() / 12.0f, w = slot - 4.5f;
+    const float baseY = area.getBottom() - 20.0f, maxH = baseY - area.getY() - 6.0f;
+    const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
+    const auto* names = flats ? flatNames : sharpNames;
+
+    g.setColour(kBoneFaint);
+    g.fillRect(area.getX(), baseY + 2.0f, area.getWidth(), 1.0f);
+    for (int pc = 0; pc < 12; ++pc) {
+        const float x = area.getX() + slot * (float) pc + 1.2f;
+        const bool tonic = view.root >= 0 && pc == view.root;
+        const bool diatonic = view.root >= 0 && inScale(pc, view.root, view.mode);
+        const float value = juce::jlimit(0.0f, 1.0f, chromaShown[(size_t) pc]);
+        const float h = 5.0f + (maxH - 5.0f) * std::pow(value, 0.85f);
+
+        // Ghost of the vertebra's full height so the spine reads as a structure.
+        g.setColour(kPanelHi);
+        g.fillRoundedRectangle(x, baseY - maxH, w, maxH, 3.0f);
+
+        juce::Colour c = tonic ? kAccent : (diatonic ? kBone.withAlpha(0.88f) : kBoneFaint);
+        if (view.root < 0) c = kBoneFaint;
+        if (tonic && tonicPulse > 0.0f) {
+            g.setColour(kAccent.withAlpha(0.22f * tonicPulse));
+            g.fillRoundedRectangle(x - 3.0f, baseY - h - 3.0f, w + 6.0f, h + 6.0f, 5.0f);
+        }
+        g.setColour(c);
+        g.fillRoundedRectangle(x, baseY - h, w, h, 3.0f);
+        // Intervertebral groove and knobs give each bar a bone silhouette.
+        if (h > 14.0f) {
+            g.setColour(kBg.withAlpha(0.55f));
+            g.fillRect(x + 2.0f, baseY - h * 0.5f, w - 4.0f, 1.2f);
+        }
+        g.setColour(c);
+        g.fillEllipse(x - 0.8f, baseY - h - 1.6f, 4.2f, 4.2f);
+        g.fillEllipse(x + w - 3.4f, baseY - h - 1.6f, 4.2f, 4.2f);
+
+        drawText(g, names[pc], { area.getX() + slot * (float) pc - 3.0f, baseY + 5.0f, slot + 6.0f, 13.0f }, 9.5f,
+                 tonic, tonic ? kAccent : (diatonic ? kBone : kBoneDim), juce::Justification::centred);
+    }
+}
+
+void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
+    const juce::Rectangle<float> r(14.0f, 236.0f, 282.0f, 80.0f);
+    drawCard(g, r);
+    drawText(g, "TEMPO", { r.getX() + 16.0f, r.getY() + 9.0f, 100.0f, 14.0f }, 9.0f, true, kBoneDim,
+             juce::Justification::centredLeft, 0.2f);
+    const bool have = view.bpmText != "--";
+    drawText(g, view.bpmText, { r.getX() + 16.0f, r.getY() + 21.0f, 150.0f, 40.0f }, 34.0f, true,
+             have ? kAccent : kBoneDim);
+    if (have) {
+        const float w = textWidth(makeFont(34.0f, true), view.bpmText);
+        drawText(g, "BPM", { r.getX() + 16.0f + w + 6.0f, r.getY() + 36.0f, 50.0f, 16.0f }, 10.0f, true, kBoneDim,
+                 juce::Justification::centredLeft, 0.12f);
+    }
+    drawText(g, view.bpmHint, { r.getX() + 16.0f, r.getY() + 60.0f, 160.0f, 14.0f }, 10.5f, false, kBoneDim);
+    drawTeeth(g, { r.getRight() - 96.0f, r.getY() + 14.0f, 80.0f, 11.0f }, view.bpmConfidence, 8);
+}
+
+void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) {
+    const juce::Rectangle<float> r(304.0f, 236.0f, 282.0f, 80.0f);
+    drawCard(g, r);
+    drawText(g, "REFERENCE A", { r.getX() + 16.0f, r.getY() + 9.0f, 120.0f, 14.0f }, 9.0f, true, kBoneDim,
+             juce::Justification::centredLeft, 0.2f);
+    drawText(g, view.refText, { r.getX() + 16.0f, r.getY() + 21.0f, 130.0f, 40.0f }, 34.0f, true,
+             view.tuningValid ? kAccent : kBoneDim);
+    if (view.tuningValid) {
+        const float w = textWidth(makeFont(34.0f, true), view.refText);
+        drawText(g, "Hz", { r.getX() + 16.0f + w + 6.0f, r.getY() + 36.0f, 30.0f, 16.0f }, 10.0f, true, kBoneDim);
+    }
+    drawText(g, view.refHint, { r.getX() + 16.0f, r.getY() + 60.0f, 130.0f, 14.0f }, 10.5f, false, kBoneDim);
+
+    // Cents gauge, -50 .. +50, with a pointer. Bone ticks, accent pointer.
+    const float gx = r.getX() + 156.0f, gw = 108.0f, gy = r.getY() + 44.0f;
+    g.setColour(kBoneFaint);
+    g.fillRect(gx, gy, gw, 1.0f);
+    for (int t = -5; t <= 5; ++t) {
+        const float x = gx + gw * (float) (t + 5) / 10.0f;
+        const float th = (t == 0) ? 10.0f : (t % 5 == 0 ? 7.0f : 4.0f);
+        g.setColour(t == 0 ? kBone : kBoneDim);
+        g.fillRect(x - 0.5f, gy - th, 1.0f, th);
+    }
+    drawText(g, "-50", { gx - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "0", { gx + gw * 0.5f - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "+50", { gx + gw - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 8.5f, false, kBoneDim, juce::Justification::centred);
+    if (view.tuningValid) {
+        const float x = gx + gw * (juce::jlimit(-50.0f, 50.0f, view.cents) + 50.0f) / 100.0f;
+        juce::Path tri; tri.addTriangle(x, gy + 1.0f, x - 4.5f, gy - 11.0f, x + 4.5f, gy - 11.0f);
+        g.setColour(kAccent); g.fillPath(tri);
+    }
+}
+
+void TonicRecreationAudioProcessorEditor::paintFooter(juce::Graphics& g) {
+    const juce::Rectangle<float> r(14.0f, 326.0f, 572.0f, 40.0f);
+    drawCard(g, r);
+    if (view.busy) {
+        g.setColour(kAccent);
+        g.fillRect(r.getX() + 1.0f, r.getY() + 1.0f, (r.getWidth() - 2.0f) * view.progress, 2.0f);
+    }
+    drawText(g, view.status, { r.getX() + 16.0f, r.getY() + 4.0f, 360.0f, r.getHeight() - 8.0f }, 11.0f, false,
+             processor.fileFailed() ? juce::Colour(0xffe58a6b) : kBoneDim);
+}
+
+void TonicRecreationAudioProcessorEditor::resized() {
+    const float s = scale();
+    auto fit = [s](float x, float y, float w, float h) {
+        return juce::Rectangle<int>(juce::roundToInt(x * s), juce::roundToInt(y * s),
+                                    juce::roundToInt(w * s), juce::roundToInt(h * s));
+    };
+    pauseButton.setBounds(fit(420.0f, 14.0f, 80.0f, 28.0f));
+    resetButton.setBounds(fit(506.0f, 14.0f, 80.0f, 28.0f));
+    openFileButton.setBounds(fit(402.0f, 332.0f, 88.0f, 28.0f));
+    liveButton.setBounds(fit(496.0f, 332.0f, 84.0f, 28.0f));
+}
+
+// --------------------------------------------------------------------------- file drops
+bool TonicRecreationAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files) {
+    for (const auto& file : files) if (isAudioFile(file)) return true;
     return false;
 }
-void TonicRecreationAudioProcessorEditor::fileDragEnter(const juce::StringArray&,int,int){dragHover=true;repaint();}
-void TonicRecreationAudioProcessorEditor::fileDragExit(const juce::StringArray&){dragHover=false;repaint();}
-void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& files,int,int){
-    dragHover=false;repaint();
-    for(const auto& f:files)if(isAudioFile(f)){loadFile(juce::File(f));break;}
+void TonicRecreationAudioProcessorEditor::fileDragEnter(const juce::StringArray&, int, int) {
+    dragHover = true;
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setVisible(false);
+    repaint();
 }
-void TonicRecreationAudioProcessorEditor::loadFile(const juce::File& f){
-    if(!f.existsAsFile())return;
-    if(processor.requestFileAnalysis(f)){
-        pauseButton.setToggleState(false,juce::dontSendNotification);
-        pauseButton.setButtonText("Pause");timerCallback();
+void TonicRecreationAudioProcessorEditor::fileDragExit(const juce::StringArray&) {
+    dragHover = false;
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setVisible(true);
+    repaint();
+}
+void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int) {
+    fileDragExit({});
+    for (const auto& f : files) if (isAudioFile(f)) { loadFile(juce::File(f)); break; }
+}
+void TonicRecreationAudioProcessorEditor::loadFile(const juce::File& f) {
+    if (!f.existsAsFile()) return;
+    if (processor.requestFileAnalysis(f)) {
+        pauseButton.setToggleState(false, juce::dontSendNotification);
+        pauseButton.setButtonText("Pause");
+        timerCallback();
     }
 }

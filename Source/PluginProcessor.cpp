@@ -40,9 +40,9 @@ void TonicRecreationAudioProcessor::resetAnalysis(){
     phraseTracker.reset(); beatGrid.reset(); downbeatChordTracker.reset(); relativeModeEvidence.reset(); keyConsistency.reset(); temporalKeyConsensus.reset(); learnedTonalFeatures.reset(); temporalTonalFeatures.reset(); analyzedSamples = 0; lastBassFrame = {};
     chordMemory.fill(0); progressionRootEvidence.fill(0);
     lastProgressionRoot=lastProgressionKind=-1; progressionEvents=0;
-    heldChordRoot=heldChordKind=-1; chordHold=0; tuningCentsMemory=0; tempoAmbiguity=0;
+    heldChordRoot=heldChordKind=-1; chordHold=0; tuningCentsMemory=0; tuningHist.fill(0); tuningHistMass=0; tuningFrames=0; tuningApplied=false; tempoAmbiguity=0;
     harmonicWrite=harmonicCount=0; tonalPower.fill(0); harmonicMask.fill(0);
-    chromaMemory.fill(0);history.fill(0);historyWrite=historyCount=samplesSinceWindow=silentFrames=0;
+    chromaMemory.fill(0);keyChroma.fill(0);keyChromaFrames=0;history.fill(0);historyWrite=historyCount=samplesSinceWindow=silentFrames=0;
     stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
     detectedRoot.store(-1);detectedMode.store(2);confidence.store(0);
     chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
@@ -78,12 +78,6 @@ void TonicRecreationAudioProcessor::rebuildFrequencyMap(double sampleRate){
         const int index=midi-36;
         const float frequency=440.0f*std::pow(2.0f,(midi-69)/12.0f);
         noteFrequencies[(size_t)index]=frequency;
-        for(int harmonic=1;harmonic<=3;++harmonic){
-            const float hz=frequency*harmonic;
-            // Never read outside the FFT spectrum at low sample rates.
-            noteBins[(size_t)index*3+(size_t)(harmonic-1)]=
-                hz<analysisSampleRate*0.45 ? juce::roundToInt(hz*windowSize/analysisSampleRate) : -1;
-        }
     }
 }
 void TonicRecreationAudioProcessor::releaseResources(){
@@ -430,8 +424,11 @@ void TonicRecreationAudioProcessor::estimateTempo() {
             score-=0.07f*localCorrelation(lag*3/2);
         if(lag*2/3>=minLag)
             score+=0.08f*localCorrelation(juce::roundToInt(lag*2.0f/3.0f));
-        // A small prior makes pulse interpretations near conventional beat rates more stable.
-        score*=0.92f+0.08f*std::exp(-0.5f*std::pow(std::log2(bpm/115.0f)/0.9f,2));
+        // Perceptual tempo prior (log-normal around 120 BPM, after Moelants & Parncutt):
+        // listeners overwhelmingly tap at 90-150 BPM, and plain autocorrelation of an
+        // accented bar (kick / snare alternation) otherwise prefers the 2-beat lag,
+        // i.e. exactly half the felt tempo.
+        score*=0.60f+0.40f*std::exp(-0.5f*std::pow(std::log2(bpm/120.0f)/0.75f,2));
         if(lastStableBpm>0.0f && std::abs(std::log2(bpm/lastStableBpm))<0.10f)score*=1.06f;
         if(host>0.0f && std::abs(std::log2(bpm/host))<0.04f)score*=1.04f;
         if(score>best){second=best;best=score;bestLag=lag;}
@@ -645,12 +642,12 @@ void TonicRecreationAudioProcessor::analyseWindow(){
             phraseTracker.reset(); beatGrid.reset(); downbeatChordTracker.reset(); relativeModeEvidence.reset(); keyConsistency.reset(); temporalKeyConsensus.reset(); learnedTonalFeatures.reset(); temporalTonalFeatures.reset(); lastBassFrame = {};
             // Prevent the previous song's seven-frame harmonic median leaking into the next.
             harmonicCount=harmonicWrite=0;
-            chromaMemory.fill(0);chordMemory.fill(0);
+            chromaMemory.fill(0);keyChroma.fill(0);keyChromaFrames=0;chordMemory.fill(0);
             progressionRootEvidence.fill(0); progressionEvents=0;
             lastProgressionRoot=lastProgressionKind=-1;
             stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
             heldChordRoot=heldChordKind=-1;chordHold=0;
-            tuningCentsMemory=0.0f;detectedTuningHz.store(440.0f);tuningConfidence.store(0.0f);
+            tuningCentsMemory=0.0f;tuningHist.fill(0.0f);tuningHistMass=0.0f;tuningFrames=0;tuningApplied=false;detectedTuningHz.store(440.0f);tuningConfidence.store(0.0f);
             detectedRoot.store(-1);detectedMode.store(2);chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
             transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
             transcribedChordBass.store(-1);transcribedChordEvidence.store(0);
@@ -671,84 +668,138 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     updateHarmonicMask();
     lastBassFrame = skell::BassFundamentalEstimator::analyze(tonalPower.data(), N/2, analysisSampleRate);
     std::array<float,12> c{}, midChroma{}, bassChroma{};
-    float tuningWeighted=0,tuningWeight=0,tuningWeightSquared=0;
-    int tuningPeakCount=0;
-    // Multiple note hypotheses can land on the same FFT peak. Count each
-    // spectral peak only once to avoid biased A-reference estimates.
-    std::array<unsigned char,N/2> visitedTuningBins {};
-    // Mark neighbouring bins too: two note hypotheses can pick different
-    // bins of the same windowed spectral main lobe.
-    for(int midi=36;midi<=95;++midi){
-        const float f=noteFrequencies[(size_t)(midi-36)];
-        float fundamental=0,score=0;
-        for(int h=1;h<=3;++h){
-            const float hz=f*h;
-            if(hz>analysisSampleRate*0.45)break;
-            const int bin=noteBins[(size_t)(midi-36)*3+(size_t)(h-1)];
-            if(bin<1 || bin>=N/2-2) continue;
-            float best=0;int bestBin=bin;
-            for(int j=std::max(1,bin-2);j<=std::min(N/2-1,bin+2);++j){
-                const float amplitude=spectrumPower[(size_t)j];
-                if(amplitude>best){best=amplitude;bestBin=j;}
-            }
-            // Tuning uses a true raw local peak, while pitch-class energy
-            // uses harmonic content after percussion suppression.
-            const float rawMagnitude=std::sqrt(best);
-            const float magnitude=std::sqrt(std::max(0.0f,tonalPower[(size_t)bestBin]));
-            if(h==1){fundamental=magnitude;
-                // Only high-resolution notes make useful FFT-bin tuning measurements.
-                if(bin>70 && bestBin>1 && bestBin<N/2-2 && rawMagnitude>0.01f
-                   && harmonicMask[(size_t)bestBin] > 0.45f
-                   && !visitedTuningBins[(size_t)bestBin]
-                   && spectrumPower[(size_t)bestBin] > spectrumPower[(size_t)(bestBin-1)]
-                   && spectrumPower[(size_t)bestBin] >= spectrumPower[(size_t)(bestBin+1)]){
-                    // Three-point parabolic interpolation of LOG spectral magnitudes.
-                    // Sub-bin frequency estimation is much less quantized than bestBin alone.
-                    auto logMag=[&](int k){
-                        return 0.5f*std::log(spectrumPower[(size_t)k]+1.0e-18f);
-                    };
-                    const float left=logMag(bestBin-1),mid=logMag(bestBin),right=logMag(bestBin+1);
-                    const float denom=left-2.0f*mid+right;
-                    const float delta=std::abs(denom)>1.0e-6f?juce::jlimit(-0.5f,0.5f,0.5f*(left-right)/denom):0.0f;
-                    const float cents=1200.0f*std::log2(float((bestBin+delta)*analysisSampleRate/N)/f);
-                    if(std::abs(cents)<30){
-                        for (int neighbour = std::max(0,bestBin-1);
-                             neighbour <= std::min(N/2-1,bestBin+1);++neighbour)
-                            visitedTuningBins[(size_t)neighbour]=1;
-                        // Avoid counting weak leakage bins as tuning observations.
-                        const float weight=std::min(rawMagnitude,100.0f) * harmonicMask[(size_t)bestBin];
-                        tuningWeighted+=cents*weight;tuningWeight+=weight;
-                        tuningWeightSquared+=weight*weight;
-                        ++tuningPeakCount;
-                    }
+    // ---- Spectral peak picking (V55) ----------------------------------------
+    // Each spectral peak is located with sub-bin interpolation and credited only
+    // to the note(s) it actually belongs to. The earlier "max within +-2 bins of
+    // the nominal 440 Hz bin" read the same main lobe for several neighbouring
+    // semitones in the bass, and missed off-grid peaks entirely in the treble.
+    struct SpectralPeak { float hz, amp; };
+    constexpr int maxPeaks = 320;
+    std::array<SpectralPeak,maxPeaks> peaks;
+    int peakCount = 0;
+    {
+        const int lowBin  = std::max(3,(int)std::ceil(50.0*N/analysisSampleRate));
+        const int highBin = std::min(N/2-3,(int)std::floor(std::min(analysisSampleRate*0.45,6400.0)*N/analysisSampleRate));
+        float maxTonal = 0.0f;
+        for (int k=lowBin;k<=highBin;++k) maxTonal=std::max(maxTonal,tonalPower[(size_t)k]);
+        const float floorPower = maxTonal*1.0e-4f; // -40 dB below the strongest tonal peak
+        if (maxTonal>1.0e-12f) {
+            for (int k=lowBin;k<=highBin;++k) {
+                const float p=tonalPower[(size_t)k];
+                if (p<=floorPower || p<tonalPower[(size_t)(k-1)] || p<tonalPower[(size_t)(k+1)]) continue;
+                if (p==tonalPower[(size_t)(k-1)]) continue; // flat top: count it once
+                // Frequency from the raw spectrum (the soft mask may zero a neighbour).
+                const float l=0.5f*std::log(spectrumPower[(size_t)(k-1)]+1.0e-18f);
+                const float m=0.5f*std::log(spectrumPower[(size_t)k]+1.0e-18f);
+                const float r=0.5f*std::log(spectrumPower[(size_t)(k+1)]+1.0e-18f);
+                const float denom=l-2.0f*m+r;
+                const float delta=(denom<-1.0e-6f)?juce::jlimit(-0.5f,0.5f,0.5f*(l-r)/denom):0.0f;
+                const float hz=float((k+delta)*analysisSampleRate/N);
+                const float amp=std::sqrt(p);
+                if (peakCount<maxPeaks) peaks[(size_t)peakCount++]={hz,amp};
+                else { // keep the strongest peaks only
+                    int weakest=0;
+                    for (int i=1;i<maxPeaks;++i) if (peaks[(size_t)i].amp<peaks[(size_t)weakest].amp) weakest=i;
+                    if (amp>peaks[(size_t)weakest].amp) peaks[(size_t)weakest]={hz,amp};
                 }
             }
-            score+=magnitude/float(h*h);
         }
-        // Reduce false note evidence from upper partials of lower notes.
-        const float noteSalience = std::sqrt(std::max(0.0f,score))*0.75f
-                                  + std::sqrt(std::max(0.0f,fundamental))*0.25f;
-        c[(size_t)(midi%12)] += noteSalience;
-        // Separate mid-register chroma limits bias from low kick/bass energy
-        // and high-register overtones without discarding those registers.
-        if (midi >= 48 && midi <= 83)
-            midChroma[(size_t)(midi%12)] += noteSalience;
-        // Separate low-register tonal evidence. The harmonic mask and the
-        // fundamental term above reduce transient/kick contamination.
-        if (midi >= 36 && midi <= 59)
-            bassChroma[(size_t)(midi%12)] += noteSalience;
     }
-    const float effectivePeaks=tuningWeightSquared>0.0f
-        ?(tuningWeight*tuningWeight/tuningWeightSquared):0.0f;
-    if(tuningWeight>5.0f && tuningPeakCount>=3 && effectivePeaks>=2.0f){
-        const float cents=juce::jlimit(-35.0f,35.0f,tuningWeighted/tuningWeight);
-        tuningCentsMemory=0.94f*tuningCentsMemory+0.06f*cents;
-        detectedTuningHz.store(ref*std::pow(2.0f,tuningCentsMemory/1200.0f));
-        tuningConfidence.store(juce::jlimit(0.0f,1.0f,(effectivePeaks-1.0f)/8.0f));
-    } else {
-        tuningConfidence.store(tuningConfidence.load()*0.90f);
-        // Treat the result as unavailable once the evidence disappears.
-        if (tuningConfidence.load() < 0.025f) detectedTuningHz.store(440.0f);
+    // ---- Tuning: mode of the peaks' deviation from the 440 Hz semitone grid --------
+    // Deviations are periodic (100 cents), so the estimate spans the full +-50 cents
+    // (A=432 Hz is -31.8 cents) with no rejection band. A histogram *mode* is used
+    // rather than a mean because partials of a harmonic tone are not equal-tempered
+    // (the 5th/7th/11th lie +14/-31/-49 cents off the grid) and would bias a mean,
+    // whereas grid-aligned partials (1st, 2nd, 3rd, 4th, 6th, 8th) all vote together.
+    {
+        float maxAmp=0.0f;
+        for (int i=0;i<peakCount;++i) maxAmp=std::max(maxAmp,peaks[(size_t)i].amp);
+        std::array<float,100> frameHist {};
+        float frameMass=0.0f;
+        for (int i=0;i<peakCount;++i) {
+            const auto& pk=peaks[(size_t)i];
+            if (pk.hz<110.0f || pk.hz>3500.0f || pk.amp<0.05f*maxAmp) continue;
+            const float midi=69.0f+12.0f*std::log2(pk.hz/ref);
+            const float dev=midi-std::floor(midi);                   // 0..1 semitone
+            const float w=std::sqrt(pk.amp);
+            const float pos=dev*100.0f;
+            const int b0=((int)pos)%100, b1=(b0+1)%100;
+            const float frac=pos-std::floor(pos);
+            frameHist[(size_t)b0]+=w*(1.0f-frac); frameHist[(size_t)b1]+=w*frac;
+            frameMass+=w;
+        }
+        if (peakCount>=4 && frameMass>0.0f) {
+            constexpr float decay=0.95f;
+            for (int k=0;k<100;++k) tuningHist[(size_t)k]=decay*tuningHist[(size_t)k]+frameHist[(size_t)k]/frameMass;
+            tuningHistMass=decay*tuningHistMass+1.0f;
+            ++tuningFrames;
+        }
+        // Circular smoothing (triangular, +-8 cents) and mode pick.
+        float bestVal=-1.0f; int bestBin=0;
+        std::array<float,100> smooth {};
+        for (int k=0;k<100;++k) {
+            float v=0.0f;
+            for (int j=-8;j<=8;++j) v+=tuningHist[(size_t)((k+j+100)%100)]*(9.0f-std::abs((float)j));
+            smooth[(size_t)k]=v;
+            if (v>bestVal) {bestVal=v;bestBin=k;}
+        }
+        // Parabolic refinement of the mode.
+        const float yl=smooth[(size_t)((bestBin+99)%100)], ym=smooth[(size_t)bestBin], yr=smooth[(size_t)((bestBin+1)%100)];
+        const float den=yl-2.0f*ym+yr;
+        const float sub=std::abs(den)>1.0e-9f?juce::jlimit(-0.5f,0.5f,0.5f*(yl-yr)/den):0.0f;
+        float cents=float(bestBin)+sub;                               // 0..100
+        if (cents>=50.0f) cents-=100.0f;                              // wrap to -50..+50
+        // Confidence: how much of all evidence sits within +-12 cents of the mode,
+        // against the 24% a flat (untuned / atonal) distribution would give.
+        float near=0.0f;
+        for (int j=-12;j<=12;++j) near+=tuningHist[(size_t)((bestBin+j+100)%100)];
+        const float fraction=tuningHistMass>1.0e-4f?near/tuningHistMass:0.0f;
+        const float maturity=juce::jlimit(0.0f,1.0f,tuningHistMass/8.0f);
+        const float conf=juce::jlimit(0.0f,1.0f,(fraction-0.32f)/0.45f)*maturity;
+        if (tuningFrames>=6 && conf>0.05f) {
+            tuningCentsMemory=cents;
+            tuningApplied = conf>0.20f;
+            detectedTuningHz.store(ref*std::pow(2.0f,tuningCentsMemory/1200.0f));
+            tuningConfidence.store(conf);
+        } else {
+            tuningApplied=false;
+            tuningConfidence.store(tuningConfidence.load()*0.90f);
+            if (tuningConfidence.load()<0.025f) { detectedTuningHz.store(440.0f); tuningCentsMemory=0.0f; }
+        }
+    }
+    // ---- Note salience by sub-harmonic summation on the tuned grid -------------
+    {
+        const float appliedRef = ref*std::pow(2.0f,(tuningApplied?tuningCentsMemory:0.0f)/1200.0f);
+        std::array<std::array<float,3>,60> best {};
+        for (int i=0;i<peakCount;++i) {
+            const auto& pk=peaks[(size_t)i];
+            const float midi=69.0f+12.0f*std::log2(pk.hz/appliedRef);
+            for (int h=1;h<=3;++h) {
+                const float note=midi-12.0f*std::log2(float(h)); // the note whose h-th harmonic this is
+                const int m=(int)std::lround(note);
+                if (m<36 || m>95) continue;
+                const float d=std::abs(note-float(m));
+                const float kernel=std::cos(float(pi)*d); // 1 at the note centre, 0 at the semitone boundary
+                const float v=pk.amp*kernel*kernel;
+                auto& slot=best[(size_t)(m-36)][(size_t)(h-1)];
+                slot=std::max(slot,v);
+            }
+        }
+        for (int midi=36;midi<=95;++midi) {
+            const auto& b=best[(size_t)(midi-36)];
+            float score=0.0f;
+            for (int h=1;h<=3;++h) score+=b[(size_t)(h-1)]/float(h*h);
+            const float fundamental=b[0];
+            // Reduce false note evidence from upper partials of lower notes.
+            const float noteSalience = std::sqrt(std::max(0.0f,score))*0.75f
+                                      + std::sqrt(std::max(0.0f,fundamental))*0.25f;
+            c[(size_t)(midi%12)] += noteSalience;
+            // Separate mid-register chroma limits bias from low kick/bass energy
+            // and high-register overtones without discarding those registers.
+            if (midi >= 48 && midi <= 83) midChroma[(size_t)(midi%12)] += noteSalience;
+            // Separate low-register tonal evidence.
+            if (midi >= 36 && midi <= 59) bassChroma[(size_t)(midi%12)] += noteSalience;
+        }
     }
     // Normalize full-range and mid-register evidence independently.
     // A band with more candidate note bins should not win simply by mass.
@@ -766,6 +817,19 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     for(int i=0;i<12;++i){
         chromaMemory[(size_t)i]=(1-alpha)*chromaMemory[(size_t)i]+alpha*c[(size_t)i]/total;
         liveChroma[(size_t)i].store(chromaMemory[(size_t)i]);
+    }
+    // Long-term key evidence. A key is a property of a passage, not of the chord
+    // sounding right now, so the ranking uses a ~20 s memory (scaled by the
+    // responsiveness parameter) instead of the ~0.5 s chord-scale memory above.
+    // Until that much audio has been heard it is a plain running average, so
+    // the first estimate still arrives quickly and is not biased by zeros.
+    {
+        ++keyChromaFrames;
+        const float hopSeconds=float(hopSize/analysisSampleRate);
+        const float longAlpha=juce::jlimit(1.0e-4f,0.5f,(alpha/0.18f)*hopSeconds/20.0f);
+        const float a=std::max(1.0f/float(keyChromaFrames),longAlpha);
+        for(int i=0;i<12;++i)
+            keyChroma[(size_t)i]=(1.0f-a)*keyChroma[(size_t)i]+a*c[(size_t)i]/total;
     }
     // Track-level feature extraction uses exactly the features provided to the
     // independently supervised trainer. The untrained model cannot affect rank.
@@ -803,7 +867,7 @@ void TonicRecreationAudioProcessor::analyseWindow(){
     std::array<Candidate,24> ranking{};int ix=0;
     for(int root=0;root<12;++root)for(int mode=0;mode<2;++mode)
         ranking[(size_t)ix++]={skell::keyCandidateScore(
-            chromaMemory,root,mode,mode==0?majorProfile:minorProfile,
+            keyChroma,root,mode,mode==0?majorProfile:minorProfile,
             bassEvidence,progressionBonus,phraseTracker.bonus(root),
             beatGrid.bonus(root),downbeatChordTracker.tonicBonus(root),
             relativeModeEvidence.bonus(root,mode),learned),root,mode};
