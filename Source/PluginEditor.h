@@ -6,7 +6,7 @@
 class SkellLookAndFeel;
 class SceneHitButton;
 
-// Skell Key editor. Everything is drawn in a fixed 600 x 380 design space and
+// Skell Key editor. Everything is drawn in a fixed 550 x 450 design space and
 // scaled to the window, so the plugin can be resized freely (fixed aspect).
 class TonicRecreationAudioProcessorEditor final : public juce::AudioProcessorEditor,
     private juce::Timer, public juce::FileDragAndDropTarget
@@ -21,8 +21,8 @@ public:
     void fileDragExit(const juce::StringArray&) override;
     void filesDropped(const juce::StringArray&, int, int) override;
 
-    static constexpr int designWidth = 600, designHeight = 380;
-    static constexpr int defaultWidth = 510, defaultHeight = 323; // 85 % of the design space
+    static constexpr int designWidth = 550, designHeight = 450;
+    static constexpr int defaultWidth = 550, defaultHeight = 450;
 
 private:
     void timerCallback() override;
@@ -43,7 +43,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<SkellLookAndFeel> look;
     std::unique_ptr<SceneHitButton> scene;
-    const juce::Rectangle<float> sceneArea { 326.0f, 76.0f, 248.0f, 146.0f };
+    const juce::Rectangle<float> sceneArea { 274.0f, 76.0f, 250.0f, 182.0f };
     float level = 0.0f, bpmNow = 0.0f, handL = 0.0f, handR = 0.0f;
     int previewPc = -1;
 

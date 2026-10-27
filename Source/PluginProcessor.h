@@ -97,7 +97,7 @@ private:
     float onsetEnergySum=0.0f, onsetHighEnergySum=0.0f;
     float tempoHighpassDecay=0.0f; // Calculated on worker at sample-rate changes, never per sample
     float tempoLowpass=0.0f, previousEnergy=0.0f, previousHighEnergy=0.0f, smoothedOnset=0.0f;
-    float lastStableBpm=0.0f;
+    float lastStableBpm=0.0f, loopFastBpm=0.0f; // loopFastBpm: tempo confirmed by loop-length fit
     skell::TempoEvidenceGate weakTempoGate;
     skell::TempoContinuity tempoContinuity;
     void consumeTempoSample(float sample);
@@ -166,6 +166,7 @@ private:
     std::array<float,12> chromaMemory {};
     std::array<float,12> keyChroma {}; // long-term (~20 s) pitch-class evidence used for the key ranking
     int keyChromaFrames=0;
+    std::array<float,12> startChroma {}, endChroma {}; // file analysis: opening / closing pitch classes
     bool holdResultsOnSilence=false; // worker-only: true while analysing a file
     int historyWrite=0, historyCount=0, samplesSinceWindow=0, silentFrames=0;
     int stableRoot=-1, stableMode=2, pendingRoot=-1, pendingMode=2, pendingCount=0;

@@ -44,14 +44,14 @@ void TonicRecreationAudioProcessor::resetAnalysis(){
     lastProgressionRoot=lastProgressionKind=-1; progressionEvents=0;
     heldChordRoot=heldChordKind=-1; chordHold=0; tuningCentsMemory=0; tuningHist.fill(0); tuningHistMass=0; tuningFrames=0; tuningApplied=false; tempoAmbiguity=0;
     harmonicWrite=harmonicCount=0; tonalPower.fill(0); harmonicMask.fill(0);
-    chromaMemory.fill(0);keyChroma.fill(0);keyChromaFrames=0;history.fill(0);historyWrite=historyCount=samplesSinceWindow=silentFrames=0;
+    chromaMemory.fill(0);keyChroma.fill(0);keyChromaFrames=0;startChroma.fill(0);endChroma.fill(0);history.fill(0);historyWrite=historyCount=samplesSinceWindow=silentFrames=0;
     stableRoot=pendingRoot=-1;stableMode=pendingMode=2;pendingCount=0;
     detectedRoot.store(-1);detectedMode.store(2);confidence.store(0);
     chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
     transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
     transcribedChordBass.store(-1);transcribedChordEvidence.store(0);
     detectedTuningHz.store(440.0f); tuningConfidence.store(0.0f);
-    detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0; weakTempoGate.reset(); tempoContinuity.reset();
+    detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0; loopFastBpm=0; weakTempoGate.reset(); tempoContinuity.reset();
     onsetHistory.fill(0); onsetWrite=onsetCount=onsetSamples=bpmAnalysisFrames=0;
     onsetEnergySum=onsetHighEnergySum=tempoLowpass=previousEnergy=previousHighEnergy=smoothedOnset=0;
     tempoSilentHops=0;
@@ -338,7 +338,7 @@ void TonicRecreationAudioProcessor::consumeTempoSample(float sample) {
             detectedBpm.store(0.0f);
             bpmConfidence.store(0.0f);
             tempoAmbiguity.store(0.0f);
-            lastStableBpm = 0.0f;
+            lastStableBpm = 0.0f; loopFastBpm = 0.0f;
             onsetHistory.fill(0.0f); weakTempoGate.reset(); tempoContinuity.reset();
             onsetWrite = onsetCount = bpmAnalysisFrames = 0;
             previousEnergy = previousHighEnergy = smoothedOnset = tempoLowpass = 0.0f;
@@ -488,29 +488,78 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         return {peak,period};
     };
     float selectedPeriod=static_cast<float>(bestLag);
-    float phaseWinConfidence=0.0f; // set when the faster 3:2 grid wins on phase evidence
+    float phaseWinConfidence=0.0f; // set when the faster 3:2 grid is confirmed by the loop length
     if(bestLag>0 && onsetCount>=juce::roundToInt(9.0f*actualOnsetRate)) {
         const float fastPeriod=bestLag*(2.0f/3.0f);
         if(fastPeriod>=minLag+1 && fastPeriod<=maxLag-1) {
             const auto slower=bestPhasePeriod(static_cast<float>(bestLag));
             const auto faster=bestPhasePeriod(fastPeriod);
             const float fastCorr=localCorrelation(juce::roundToInt(fastPeriod));
-            // Dotted-rhythm kick patterns put most lag correlation on the 3:2 alias
-            // (e.g. 100 for a true 150 BPM) and little on the true beat lag. Accept the
-            // faster grid when the phase-folded evidence alone is clearly and
-            // substantially stronger, provided its lag still shows some periodicity.
-            const bool strongPhaseWin = fastCorr > 0.06f && faster.first > 2.0f
-                && faster.first > slower.first*1.30f && faster.first > slower.first + 0.50f;
-            if (strongPhaseWin
-                || (fastCorr > 0.22f && faster.first > slower.first*1.20f
+            if ((fastCorr > 0.22f && faster.first > slower.first*1.20f
                  && faster.first > slower.first + 0.23f)
                 || (corr[(size_t)bestLag] < 0.18f
                     && skell::TempoEvidenceGate::preferThreeTwoFast(
                         localCorrelation(bestLag), fastCorr, slower.first, faster.first))) {
                 selectedPeriod=faster.second;
-                if (strongPhaseWin) phaseWinConfidence=juce::jlimit(0.0f,0.65f,0.30f+0.12f*(faster.first-slower.first));
                 bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
             }
+        }
+    }
+
+    // Loop-length consistency (3:2 alias). Dotted-rhythm patterns (kicks every 1.5 beats)
+    // make a track at 150 BPM autocorrelate most strongly at 100 BPM. The song's
+    // dominant long-range repetition (a 2-4 bar loop) must, however, be a whole number
+    // of beats of the TRUE tempo. If that loop is a whole number of beats at 2/3 of the
+    // current period but not at the current one, the faster grid is the real beat.
+    if (bestLag>0 && selectedPeriod==static_cast<float>(bestLag) && count>=juce::roundToInt(14.0f*actualOnsetRate)) {
+        const int minLoop=juce::roundToInt(1.5f*actualOnsetRate);
+        const int maxLoop=std::min(juce::roundToInt(14.0f*actualOnsetRate), count*45/100);
+        float loopCorr=0.0f; int loopLag=0;
+        auto acfAt=[&](int lag)->float{
+            float cross=0.0f;
+            for(int i=lag;i<count;++i) cross+=envelope[(size_t)i]*envelope[(size_t)(i-lag)];
+            const float e1=energyPrefix[(size_t)count]-energyPrefix[(size_t)lag], e2=energyPrefix[(size_t)(count-lag)];
+            return (e1>1.0e-8f&&e2>1.0e-8f)?cross/std::sqrt(e1*e2):0.0f;
+        };
+        std::array<float,3600> longAcf {};
+        for(int lag=minLoop;lag<=maxLoop && lag<count-100;++lag) longAcf[(size_t)lag]=acfAt(lag);
+        for(int lag=minLoop+1;lag<maxLoop-1 && lag<count-100;++lag) {
+            const float v=longAcf[(size_t)lag];
+            if(v>loopCorr && v>=longAcf[(size_t)lag-1] && v>=longAcf[(size_t)lag+1]){loopCorr=v;loopLag=lag;}
+        }
+        // Only a strong, machine-exact loop is trusted: a performed piece drifts slightly,
+        // so its phrase lengths are never an exact whole number of beats at any tempo.
+        if(loopLag>0 && loopCorr>=0.75f) {
+            const float fastGuess=bestLag*(2.0f/3.0f);
+            if(fastGuess>=minLag+1) {
+                const float fastPeriod=bestPhasePeriod(fastGuess).second;
+                auto misfit=[&](float period)->float{       // relative error of the best whole-beat fit
+                    const float beats=std::max(1.0f,std::round(loopLag/period));
+                    return std::abs(loopLag/(beats*period)-1.0f);
+                };
+                if(misfit(fastPeriod)<0.008f && misfit(static_cast<float>(bestLag))>0.025f
+                   && std::round(loopLag/fastPeriod)>=4.0f) {
+                    selectedPeriod=fastPeriod;
+                    bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
+                    phaseWinConfidence=juce::jlimit(0.0f,0.6f,0.30f+0.6f*(loopCorr-0.75f));
+                    loopFastBpm=60.0f*actualOnsetRate/selectedPeriod;
+                }
+            }
+        }
+    }
+
+    // A loop-confirmed faster tempo is kept: a single frame that fails to re-confirm it
+    // (e.g. a sparse passage) must not drop the answer back to the 3:2 alias.
+    if (loopFastBpm>0.0f && selectedPeriod>0.0f) {
+        const float nowBpm=60.0f*actualOnsetRate/selectedPeriod;
+        if (std::abs(nowBpm*1.5f/loopFastBpm-1.0f)<0.04f) {          // currently proposing the slow alias
+            selectedPeriod=60.0f*actualOnsetRate/loopFastBpm;
+            bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
+            phaseWinConfidence=std::max(phaseWinConfidence,0.30f);
+        } else if (std::abs(nowBpm/loopFastBpm-1.0f)<0.03f) {
+            phaseWinConfidence=std::max(phaseWinConfidence,0.30f);
+        } else if (std::abs(std::log2(nowBpm/loopFastBpm))>0.4f) {
+            loopFastBpm=0.0f;                                           // genuinely different tempo now
         }
     }
 
@@ -551,7 +600,7 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     // measured autocorrelation and phase-folded onset timing.
     const float chosenCorr = bestLag>0 ? corr[(size_t)bestLag] : 0.0f;
     const float chosenBpm = selectedPeriod>0.0f ? 60.0f*actualOnsetRate/selectedPeriod : 0.0f;
-    const bool strongPulse = chosenCorr >= 0.18f;
+    const bool strongPulse = chosenCorr >= 0.18f || phaseWinConfidence > 0.0f;
     const float chosenPhase = (!strongPulse && bestLag>0) ? phaseStrength(selectedPeriod) : 0.0f;
     const bool recurringWeakPulse = !strongPulse && bestLag>0 && weakTempoGate.observeWeak(
         chosenBpm, chosenCorr, chosenPhase, count/actualOnsetRate);
@@ -860,6 +909,18 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         for(int i=0;i<12;++i)
             keyChroma[(size_t)i]=(1.0f-a)*keyChroma[(size_t)i]+a*c[(size_t)i]/total;
     }
+    // File analysis only: remember how the piece begins (first 10 s) and how it ends
+    // (~6 s memory that holds through a silent tail). Music usually opens and closes on
+    // the tonic, which is independent evidence for the key.
+    if(holdResultsOnSilence){
+        const float secs=float(analyzedSamples/analysisSampleRate);
+        const float ea=float(hopSize/analysisSampleRate)/6.0f;
+        for(int i=0;i<12;++i){
+            const float v=c[(size_t)i]/total;
+            if(secs<10.0f) startChroma[(size_t)i]+=v;
+            endChroma[(size_t)i]=(1.0f-ea)*endChroma[(size_t)i]+ea*v;
+        }
+    }
     // Track-level feature extraction uses exactly the features provided to the
     // independently supervised trainer. The untrained model cannot affect rank.
     learnedTonalFeatures.observe(chromaMemory,lastBassFrame.pc,lastBassFrame.confidence);
@@ -892,10 +953,18 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                 0.10f*(relative-1.0f/12.0f));
         }
     }
+    // Tonic-triad template (root, fifth, third) matched against how the file opens and closes.
+    auto triadCos=[](const std::array<float,12>& v,int root,int mode){
+        float t[12]={}; t[root]=1.0f; t[(root+(mode==0?4:3))%12]=0.7f; t[(root+7)%12]=0.8f;
+        float ab=0,aa=0,bb=0; for(int i=0;i<12;++i){ab+=v[(size_t)i]*t[i];aa+=v[(size_t)i]*v[(size_t)i];bb+=t[i]*t[i];}
+        return ab/std::sqrt(std::max(1.0e-12f,aa*bb)); };
+    auto boundaryEvidence=[&](int root,int mode)->float{
+        if(!holdResultsOnSilence) return 0.0f;
+        return 0.4f*0.5f*(triadCos(startChroma,root,mode)+triadCos(endChroma,root,mode)); };
     struct Candidate{float score;int root,mode;};
     std::array<Candidate,24> ranking{};int ix=0;
     for(int root=0;root<12;++root)for(int mode=0;mode<2;++mode)
-        ranking[(size_t)ix++]={skell::keyCandidateScore(
+        ranking[(size_t)ix++]={boundaryEvidence(root,mode)+skell::keyCandidateScore(
             keyChroma,root,mode,mode==0?majorProfile:minorProfile,
             bassEvidence,progressionBonus,phraseTracker.bonus(root),
             beatGrid.bonus(root),downbeatChordTracker.tonicBonus(root),

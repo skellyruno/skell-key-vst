@@ -28,29 +28,32 @@ Historical benchmarks and logs, obsolete README/change files, old docs, standalo
 - **Peak-based note evidence.** Spectral peaks are interpolated and credited to the nearest note(s) with a cosine taper, instead of each note reading the maximum of ±2 bins around its 440-grid bin (which let neighbouring semitones share one bass peak and missed off-grid treble peaks).
 - **Tuning estimate covers the full ±50 cents** (A=432 Hz is −31.8 cents; the old estimator rejected anything beyond ±30) using the mode of a deviation histogram, which ignores non-equal-tempered overtones. The tuned grid is then used for the chroma, so detuned or sampled material is analysed correctly.
 - **Files keep their result through silence.** A track ending in silence or a fade used to blank the key and BPM to "No key found"; file analysis now holds the result and uses the whole-file average for the key.
-- **3:2 tempo alias:** dotted-kick (trap) patterns that autocorrelate at 2/3 of the real tempo (100 instead of 150) are corrected when the phase-folded beat evidence clearly favours the faster grid.
+- **3:2 tempo alias (loop-length check):** dotted-kick (trap) patterns autocorrelate at 2/3 of the real tempo (100 instead of 150). The song's dominant long-range loop (e.g. 4 bars) must be a whole number of beats at the true tempo, so when the loop fits the faster grid but not the slower one, the faster tempo is chosen and held. On a real trap track this gave 150 BPM for all 20 trimmed versions of the file; the previous phase-strength rule only did so by luck.
 - **Tempo prior strengthened** (log-normal around 120 BPM, weight 0.40, was 0.08) to reduce half-time answers.
 
-**UI** — skull-bowed skeleton-key mark, bone-on-black palette with one ecto-green accent. A skeleton plays a one-octave piano: keys in the detected key are bright, the tonic is green, and every key glows with the live energy of its pitch class. **Click the skeleton to hear the detected key** (the scale ascending, then the tonic triad); the hands and keys follow the notes. The strip under the header is an input level meter with a playhead that sweeps one bar at the detected BPM. Key-bit "teeth" show confidence, a cents gauge shows Reference A, and the window is 15 % smaller (510 × 323) and resizable (fixed aspect). The `preferFlats` parameter is honoured in the display.
+**UI** — skull-bowed skeleton-key mark, bone-on-black palette with one ecto-green accent. A skeleton plays a one-octave piano: keys in the detected key are bright, the tonic is green, and every key glows with the live energy of its pitch class. **Click the skeleton to hear the detected key** (the scale ascending, then the tonic triad); the hands and keys follow the notes. The strip under the header is an input level meter with a playhead that sweeps one bar at the detected BPM. Key-bit "teeth" show confidence, a cents gauge shows Reference A, and the default window is 550 × 450 and resizable (fixed aspect). The `preferFlats` parameter is honoured in the display.
 
 The preview tone is mixed into the plugin output only while it plays, after analysis has taken its copy of the input, so it never affects detection. Nothing is added to the output otherwise.
+- **Opening and closing chords** (file analysis only): how a piece starts and ends is matched against each key's tonic triad as extra evidence.
 - **Key profiles** are now the average of Krumhansl-Kessler and Temperley.
 
-## Measured results (synthetic, headless)
+## Measured results (headless, rendered audio with known answers)
 
-48 generated tracks × 6 timbre/tuning/drum-style sets, each with known key, BPM and tuning (tuning offsets −35…+35 cents, 72–160 BPM, four drum styles):
+**Real compositions** — 150 tracks rendered from public Humdrum scores (Bach chorales, Mozart and Beethoven sonatas), transposed into all keys, 0 to 35 cents detuned, first 80 s:
 
 | | V54 | V55 |
 |---|---|---|
-| Key exact | 69 / 288 (24 %) | 221 / 288 (77 %) |
-| Tuning, mean abs error | ~12 cents | 0.2 cents |
-| Tempo exact (±2.5 %) | 10 / 263 | ~32 / 263 |
+| Key exact | 54 / 150 (36 %) | 110 / 150 (73 %) |
+| Tuning, mean abs error | 5.2 cents | 0.1 cents |
+| Tempo within 3 % | 120 / 134 | 124 / 134 |
 
-Key results are also stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys between sample rates.
+**Synthetic loops with drums** (288 key tracks, 263 tempo tracks): key 69 → 223 correct; tuning error ~12 → 0.2 cents; exact tempo 10 → 34.
+
+Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys between rates. A real trap track (B major, 150 BPM, A = 450 Hz) is read correctly in all 20 trimmed versions.
 
 ## Limitations
 
-- These numbers come from **synthetic music**, not real recordings, so treat them as evidence of direction, not as a guarantee. Please compare against tracks whose key and BPM you know.
+- The test audio is **rendered from scores or generated**, not commercial recordings, so treat the numbers as evidence of direction, not a guarantee. Compare against tracks whose key and BPM you know.
 - **Tempo still often lands on half-time** for accent-alternating drum patterns (kick/snare backbeat). Fixing that properly needs a different onset representation and real reference tracks to validate; the prior change only helps part of it.
 - Relative major/minor remains the most common key confusion.
 - The Windows GitHub Actions build and FL Studio host testing have not been run. The sources were compiled and run here against JUCE 8.0.12 on Linux (GCC), including the editor.
