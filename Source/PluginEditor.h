@@ -22,7 +22,7 @@ public:
     void filesDropped(const juce::StringArray&, int, int) override;
 
     static constexpr int designWidth = 550, designHeight = 450;
-    static constexpr int defaultWidth = 550, defaultHeight = 450;
+    static constexpr int defaultWidth = 495, defaultHeight = 405;
 
 private:
     void timerCallback() override;
@@ -40,6 +40,8 @@ private:
     TonicRecreationAudioProcessor& processor;
     juce::TextButton pauseButton {"Pause"}, resetButton {"Reset"};
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
+    juce::TextButton halfButton {"/2"}, doubleButton {"x2"};
+    float bpmFactor = 1.0f;   // user octave correction (x0.5 / x2) applied to the displayed tempo
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<SkellLookAndFeel> look;
     std::unique_ptr<SceneHitButton> scene;

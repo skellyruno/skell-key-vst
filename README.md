@@ -57,3 +57,11 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 - **Tempo still often lands on half-time** for accent-alternating drum patterns (kick/snare backbeat). Fixing that properly needs a different onset representation and real reference tracks to validate; the prior change only helps part of it.
 - Relative major/minor remains the most common key confusion.
 - The Windows GitHub Actions build and FL Studio host testing have not been run. The sources were compiled and run here against JUCE 8.0.12 on Linux (GCC), including the editor.
+
+## V56 changes
+- Tempo: half-time alias rule (2:1) plus sub-lag period refinement; 156 BPM trap loops now read ~156, not 78.
+- Tempo card: /2 and x2 toggle buttons (green when on, one cancels the other) to correct an octave error by hand.
+- "Send to Skelltune" replaces Pause: holds the detected scale as MIDI notes (C4-B4 octave) on the MIDI output and copies the key to the clipboard. Route the plugin's MIDI output to your autotune's MIDI scale input (host dependent).
+- Window default 495 x 405 (10 % smaller).
+- Key (file mode): the opening/closing tonic-triad evidence is weighted 2.5x higher. Real-composition key accuracy 108 -> 118 / 150, synthetic 224 -> 225 / 288. Higher weights score better on pieces but flip the malta beat to minor, so 1.0 is the compromise.
+- Tempo: the final period is refined to ~0.1 % so a 156 BPM loop reads 156.07, and trimmed cuts of the malta beat now all read 149.9-150.1.

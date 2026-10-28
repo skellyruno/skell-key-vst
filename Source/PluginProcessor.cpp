@@ -89,7 +89,24 @@ bool TonicRecreationAudioProcessor::isBusesLayoutSupported(const BusesLayout& l)
     const auto a=l.getMainInputChannelSet(),b=l.getMainOutputChannelSet();
     return (a==juce::AudioChannelSet::mono()||a==juce::AudioChannelSet::stereo())&&a==b;
 }
-void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,juce::MidiBuffer&){
+void TonicRecreationAudioProcessor::emitScaleMidi(juce::MidiBuffer& midi){
+    static const int maj[7]={0,2,4,5,7,9,11}, mnr[7]={0,2,3,5,7,8,10};
+    unsigned int want=0;
+    const int root=detectedRoot.load(), mode=detectedMode.load();
+    if(scaleOutputOn.load() && root>=0 && root<12){
+        const int* iv=mode==1?mnr:maj;
+        for(int i=0;i<7;++i) want|=1u<<((root+iv[i])%12);
+    }
+    for(int pc=0;pc<12;++pc){
+        const unsigned int bit=1u<<pc;
+        if((want&bit)&&!(scaleSentMask&bit)) midi.addEvent(juce::MidiMessage::noteOn(1,60+pc,(juce::uint8)100),0);
+        else if(!(want&bit)&&(scaleSentMask&bit)) midi.addEvent(juce::MidiMessage::noteOff(1,60+pc),0);
+    }
+    scaleSentMask=want;
+}
+void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,juce::MidiBuffer& midi){
+    midi.clear();
+    emitScaleMidi(midi);
     juce::ScopedNoDenormals nd;
     // Input level for the UI meter (before the preview tone is added).
     {
@@ -506,6 +523,27 @@ void TonicRecreationAudioProcessor::estimateTempo() {
         }
     }
 
+    // Half-time alias (2:1). A trap/hip-hop beat at 156 BPM places kick and snare two beats
+    // apart, so the 78 BPM lag autocorrelates best. If the exactly double tempo is itself a
+    // clear periodicity and its phase-folded pulse is at least as sharp, the fast grid is the beat.
+    bool halfTimePromoted=false;
+    if (bestLag>0 && selectedPeriod==static_cast<float>(bestLag)) {
+        const float bpmNow=60.0f*actualOnsetRate/bestLag;
+        const int halfLag=juce::roundToInt(bestLag*0.5f);
+        if (bpmNow<96.0f && halfLag>=minLag && bpmNow*2.0f<=185.0f) {
+            const float c1=corr[(size_t)bestLag], c2=localCorrelation(halfLag);
+            if (c2>=0.60f*c1 && c2>0.15f) {
+                const auto slow=bestPhasePeriod(static_cast<float>(bestLag));
+                const auto fast=bestPhasePeriod(bestLag*0.5f);
+                if (fast.first>=slow.first*1.35f) {
+                    selectedPeriod=fast.second;
+                    bestLag=juce::jlimit(minLag,maxLag,juce::roundToInt(selectedPeriod));
+                    halfTimePromoted=true; phaseWinConfidence=std::max(phaseWinConfidence,0.25f);
+                }
+            }
+        }
+    }
+
     // Loop-length consistency (3:2 alias). Dotted-rhythm patterns (kicks every 1.5 beats)
     // make a track at 150 BPM autocorrelate most strongly at 100 BPM. The song's
     // dominant long-range repetition (a 2-4 bar loop) must, however, be a whole number
@@ -546,6 +584,19 @@ void TonicRecreationAudioProcessor::estimateTempo() {
                 }
             }
         }
+    }
+
+    // Fine refinement: the 100 Hz lag grid is coarse at fast tempi (1 lag = 1.5 BPM at 156), so
+    // pick the period within +-1.6 % that makes the onsets of the whole window line up best.
+    if (selectedPeriod>0.0f && onsetCount>=juce::roundToInt(9.0f*actualOnsetRate)) {
+        float bestEv=-1.0f, bestP=selectedPeriod;
+        for(int k=-16;k<=16;++k){
+            const float trial=selectedPeriod*(1.0f+0.001f*(float)k);
+            if(trial<minLag || trial>maxLag) continue;
+            const float ev=phaseStrength(trial)*(1.0f-0.002f*std::abs((float)k)); // prefer the unrefined value on ties
+            if(ev>bestEv){bestEv=ev;bestP=trial;}
+        }
+        selectedPeriod=bestP;
     }
 
     // A loop-confirmed faster tempo is kept: a single frame that fails to re-confirm it
@@ -629,7 +680,7 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     const bool octaveJump = lastStableBpm > 0.0f &&
         (std::abs(bpm / lastStableBpm - 2.0f) < 0.10f ||
          std::abs(bpm / lastStableBpm - 0.5f) < 0.05f);
-    if(octaveJump && tempoAmbiguity.load() > 0.72f) {
+    if(octaveJump && !halfTimePromoted && tempoAmbiguity.load() > 0.72f) {
         bpmConfidence.store(conf * 0.5f);
         detectedBpm.store(lastStableBpm);
         return;
@@ -960,7 +1011,7 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         return ab/std::sqrt(std::max(1.0e-12f,aa*bb)); };
     auto boundaryEvidence=[&](int root,int mode)->float{
         if(!holdResultsOnSilence) return 0.0f;
-        return 0.4f*0.5f*(triadCos(startChroma,root,mode)+triadCos(endChroma,root,mode)); };
+        return 1.0f*0.5f*(triadCos(startChroma,root,mode)+triadCos(endChroma,root,mode)); };
     struct Candidate{float score;int root,mode;};
     std::array<Candidate,24> ranking{};int ix=0;
     for(int root=0;root<12;++root)for(int mode=0;mode<2;++mode)

@@ -119,11 +119,14 @@ public:
         auto fill = kPanelHi;
         if (down) fill = juce::Colour(0xff3a4a22);
         else if (highlighted) fill = juce::Colour(0xff26231c);
+        const bool mini = button.getComponentID() == "mini";
+        if (mini && button.getToggleState()) fill = kAccent;
         g.setColour(fill); g.fillRect(r);
         const bool focus = button.hasKeyboardFocus(true);
         g.setColour(focus ? kAccent : (highlighted ? kBoneDim : kLine));
         g.drawRect(r, 1.0f);
-        if (button.getToggleState()) {
+        if (mini && button.getToggleState()) { g.setColour(kAccent); g.drawRect(r, 1.0f); }
+        else if (button.getToggleState()) {
             g.setColour(kAccent);
             g.fillRect(r.getX(), r.getY(), 2.5f, r.getHeight());
         }
@@ -133,8 +136,11 @@ public:
     }
     void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) override {
         g.setColour(button.isEnabled() ? kBone : kBoneDim);
-        g.setFont(getTextButtonFont(button, button.getHeight()));
-        g.drawFittedText(button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
+        const bool mini = button.getComponentID() == "mini";
+        g.setFont(mini ? makeFont((float) button.getHeight() * 0.64f, true, 0.02f) : getTextButtonFont(button, button.getHeight()));
+        if (mini && button.getToggleState()) g.setColour(juce::Colour(0xff0b0c08));
+        else if (mini && button.isMouseOver()) g.setColour(kAccent);
+        g.drawFittedText(mini ? button.getButtonText() : button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
                          juce::Justification::centred, 1, 0.85f);
     }
 };
@@ -159,21 +165,39 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     resized();
 
     look = std::make_unique<SkellLookAndFeel>();
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) {
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) {
         b->setLookAndFeel(look.get());
         addAndMakeVisible(b);
     }
+    halfButton.setComponentID("mini"); doubleButton.setComponentID("mini");
+    halfButton.setTooltip("Tempo is double what it should be: halve it");
+    doubleButton.setTooltip("Tempo is half what it should be: double it");
+    halfButton.setClickingTogglesState(true); doubleButton.setClickingTogglesState(true);
+    halfButton.onClick = [this] {       // on/off; turning one on turns the other off
+        if (halfButton.getToggleState()) doubleButton.setToggleState(false, juce::dontSendNotification);
+        bpmFactor = halfButton.getToggleState() ? 0.5f : 1.0f; timerCallback(); };
+    doubleButton.onClick = [this] {
+        if (doubleButton.getToggleState()) halfButton.setToggleState(false, juce::dontSendNotification);
+        bpmFactor = doubleButton.getToggleState() ? 2.0f : 1.0f; timerCallback(); };
+    pauseButton.setButtonText("Send to Skelltune");
     pauseButton.setClickingTogglesState(true);
-    pauseButton.setTooltip("Freeze analysis of live input");
+    pauseButton.setEnabled(false);
+    pauseButton.setTooltip("Send the detected scale to your autotune as MIDI notes (also copies the key to the clipboard). Set the autotune to take its scale from MIDI.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
 
     pauseButton.onClick = [this] {
-        processor.setPaused(pauseButton.getToggleState());
-        pauseButton.setButtonText(pauseButton.getToggleState() ? "Resume" : "Pause");
+        const bool on = pauseButton.getToggleState() && view.root >= 0;
+        processor.setScaleOutput(on);
+        if (on) {
+            const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
+            juce::SystemClipboard::copyTextToClipboard(juce::String((flats ? flatNames : sharpNames)[view.root]) + (view.mode == 0 ? " major" : " minor"));
+        }
+        timerCallback();
     };
     resetButton.onClick = [this] {
+        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         if (processor.isOfflineMode()) processor.returnToLive(); else processor.requestReset();
         timerCallback();
     };
@@ -185,9 +209,10 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
             [safe](const juce::FileChooser& chooser) { if (safe != nullptr) safe->loadFile(chooser.getResult()); });
     };
     liveButton.onClick = [this] {
+        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         processor.returnToLive();
         pauseButton.setToggleState(false, juce::dontSendNotification);
-        pauseButton.setButtonText("Pause");
+        processor.setScaleOutput(false);
         timerCallback();
     };
     startTimerHz(30);
@@ -196,7 +221,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
 TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setLookAndFeel(nullptr);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setLookAndFeel(nullptr);
     scene.reset();
     look.reset();
 }
@@ -241,7 +266,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         if (bass >= 0 && bass < 12 && bass != cr) view.chordText += "/" + juce::String(names[bass]);
     }
 
-    const float bpmValue = startingFile ? 0.0f : processor.getDetectedBpm();
+    const float bpmValue = startingFile ? 0.0f : juce::jlimit(0.0f, 400.0f, processor.getDetectedBpm() * bpmFactor);
     view.bpmConfidence = startingFile ? 0.0f : juce::jlimit(0.0f, 1.0f, processor.getBpmConfidence());
     view.bpmText = bpmValue > 0 ? juce::String(bpmValue, 1) : "--";
     view.bpmHint = bpmValue > 0 ? "Confidence  " + juce::String(juce::roundToInt(view.bpmConfidence * 100.0f)) + "%"
@@ -280,6 +305,12 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const float db = l > 1.0e-5f ? 20.0f * std::log10(l) : -100.0f;
         const float target = juce::jlimit(0.0f, 1.0f, (db + 54.0f) / 54.0f);
         level += (target - level) * (target > level ? 0.6f : 0.12f);
+    }
+    {   // Autotune button: usable only once a key exists; turns itself off if the key is lost.
+        const bool haveKey = root >= 0;
+        if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); }
+        pauseButton.setEnabled(haveKey);
+        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending scale" : "Send to Skelltune");
     }
     previewPc = processor.getPreviewPitchClass();
     bpmNow = juce::String(view.bpmText).getFloatValue();
@@ -556,11 +587,13 @@ void TonicRecreationAudioProcessorEditor::resized() {
         return juce::Rectangle<int>(juce::roundToInt(x * s), juce::roundToInt(y * s),
                                     juce::roundToInt(w * s), juce::roundToInt(h * s));
     };
-    pauseButton.setBounds(fit(366.0f, 14.0f, 80.0f, 28.0f));
-    resetButton.setBounds(fit(454.0f, 14.0f, 80.0f, 28.0f));
+    pauseButton.setBounds(fit(332.0f, 16.0f, 134.0f, 24.0f));
+    resetButton.setBounds(fit(472.0f, 16.0f, 62.0f, 24.0f));
     if (scene != nullptr) scene->setBounds(fit(sceneArea.getX(), sceneArea.getY(), sceneArea.getWidth(), sceneArea.getHeight()));
-    openFileButton.setBounds(fit(326.0f, 395.0f, 100.0f, 34.0f));
-    liveButton.setBounds(fit(432.0f, 395.0f, 92.0f, 34.0f));
+    openFileButton.setBounds(fit(350.0f, 398.0f, 90.0f, 28.0f));
+    liveButton.setBounds(fit(444.0f, 398.0f, 84.0f, 28.0f));
+    halfButton.setBounds(fit(187.0f, 312.0f, 24.0f, 16.0f));
+    doubleButton.setBounds(fit(215.0f, 312.0f, 24.0f, 16.0f));
 }
 
 // --------------------------------------------------------------------------- file drops
@@ -570,12 +603,12 @@ bool TonicRecreationAudioProcessorEditor::isInterestedInFileDrag(const juce::Str
 }
 void TonicRecreationAudioProcessorEditor::fileDragEnter(const juce::StringArray&, int, int) {
     dragHover = true;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setVisible(false);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setVisible(false);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::fileDragExit(const juce::StringArray&) {
     dragHover = false;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton }) b->setVisible(true);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setVisible(true);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int) {
@@ -585,8 +618,9 @@ void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& 
 void TonicRecreationAudioProcessorEditor::loadFile(const juce::File& f) {
     if (!f.existsAsFile()) return;
     if (processor.requestFileAnalysis(f)) {
+        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         pauseButton.setToggleState(false, juce::dontSendNotification);
-        pauseButton.setButtonText("Pause");
+        processor.setScaleOutput(false);
         timerCallback();
     }
 }

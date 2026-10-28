@@ -27,7 +27,7 @@ public:
     bool hasEditor() const override { return true; }
     const juce::String getName() const override { return "Skell Key"; }
     bool acceptsMidi() const override { return false; }
-    bool producesMidi() const override { return false; }
+    bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
     int getNumPrograms() override { return 1; }
@@ -39,6 +39,9 @@ public:
     void setStateInformation(const void*, int) override;
     // Click-to-hear preview of the detected key. Message thread requests, audio thread renders.
     void playKeyPreview(int root,int mode);
+    // "Send to autotune": while on, the detected scale is held as MIDI notes on the plugin's MIDI output.
+    void setScaleOutput(bool on) { scaleOutputOn.store(on); }
+    bool isScaleOutputOn() const { return scaleOutputOn.load(); }
     int getPreviewPitchClass() const { return previewNote.load(std::memory_order_relaxed); } // -1 when silent
     float getInputLevel() const { return inputLevel.load(std::memory_order_relaxed); }
     void requestReset() { resetRequested.store(true, std::memory_order_release); analysisReady.signal(); }
@@ -172,6 +175,9 @@ private:
     int stableRoot=-1, stableMode=2, pendingRoot=-1, pendingMode=2, pendingCount=0;
     void analyseBlock(juce::AudioBuffer<float>&);
     void renderPreview(juce::AudioBuffer<float>&);
+    void emitScaleMidi(juce::MidiBuffer&);
+    std::atomic<bool> scaleOutputOn {false};
+    unsigned int scaleSentMask=0; // audio thread only
     std::atomic<float> inputLevel {0.0f};
     std::atomic<bool> previewRequest {false};
     std::atomic<int> previewRoot {0}, previewMode {0}, previewNote {-1};
