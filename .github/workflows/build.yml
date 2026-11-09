@@ -18,6 +18,7 @@ jobs:
           Compress-Archive -Path $plugin.FullName -DestinationPath TONIC-inspired-Windows-VST3.zip
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 1
           name: TONIC-inspired-Windows-VST3
           path: TONIC-inspired-Windows-VST3.zip
           if-no-files-found: error
