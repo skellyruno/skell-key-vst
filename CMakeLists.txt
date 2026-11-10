@@ -17,7 +17,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(SkellCoreShared
     GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
-    GIT_TAG ae0b0ecb807421431f7c8d5df62baef7b7ce7ca2
+    GIT_TAG bca5eb7cef326772499a0b4afe0e5389db918d3a
     SOURCE_SUBDIR SkellCore)
 FetchContent_MakeAvailable(SkellCoreShared)
 
