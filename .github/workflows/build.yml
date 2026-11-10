@@ -1,6 +1,12 @@
 name: BuildVST3
 on:
   workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 jobs:
   windows-vst3:
     runs-on: windows-latest
