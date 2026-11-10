@@ -14,8 +14,10 @@
 #include "TonalCenterModel.h"
 #include "TemporalTonalFeatures.h"
 #include "KeyTemporalConsensus.h"
+#include <SkellCore/WorldLink.h>
+#include <SkellCore/SkullTheme.h>
 
-class TonicRecreationAudioProcessor final : public juce::AudioProcessor {
+class TonicRecreationAudioProcessor final : public juce::AudioProcessor, private juce::Timer {
 public:
     TonicRecreationAudioProcessor();
     ~TonicRecreationAudioProcessor() override;
@@ -80,8 +82,22 @@ public:
     float getRankedScore(int i) const { return candidateScores[(size_t)juce::jlimit(0,2,i)].load(); }
     float getChroma(int i) const { return liveChroma[(size_t)juce::jlimit(0,11,i)].load(); }
     juce::AudioProcessorValueTreeState& getState() { return state; }
+    skellcore::world::WorldLink worldLink{"skell.key","Skell Key"};
+    void joinWorld() { if(worldLink.join()) { worldLastSent_=0; worldStable_=0; startTimerHz(5); } }
+    void leaveWorld() { stopTimer(); worldLink.leave(); }
+    skellcore::ui::SkullSkin getSkullSkin() const noexcept {
+        return skellcore::ui::skinFromIndex(skinIndex_.load(std::memory_order_relaxed));
+    }
+    void setSkullSkin(skellcore::ui::SkullSkin skin) {
+        const auto selected=static_cast<int>(skin);
+        skinIndex_.store(selected,std::memory_order_release);
+        state.state.setProperty("skellSkullSkin",selected,nullptr);
+    }
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 private:
+    void timerCallback() override;
+    std::atomic<int> skinIndex_{0};
+    int worldCandidate_=0,worldStable_=0,worldLastSent_=0,worldRefresh_=0;
     static constexpr int windowSize = 16384, hopSize = 4096, fifoSize = 65536;
     juce::AudioProcessorValueTreeState state;
     std::atomic<bool> paused {false}, resetRequested {false};

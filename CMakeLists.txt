@@ -13,6 +13,14 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# Shared SKELL identities and theme/key link, pinned to an immutable revision.
+include(FetchContent)
+FetchContent_Declare(SkellCoreShared
+    GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
+    GIT_TAG ae0b0ecb807421431f7c8d5df62baef7b7ce7ca2
+    SOURCE_SUBDIR SkellCore)
+FetchContent_MakeAvailable(SkellCoreShared)
+
 juce_add_plugin(TonicRecreation
     COMPANY_NAME "Independent Recreation"
     BUNDLE_ID "audio.independent.tonic-recreation"
@@ -39,7 +47,8 @@ target_link_libraries(TonicRecreation PRIVATE
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_dsp
-    juce::juce_gui_extra)
+    juce::juce_gui_extra
+    SkellCore::DSP SkellCore::UI)
 target_compile_definitions(TonicRecreation PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_WEB_BROWSER=0
