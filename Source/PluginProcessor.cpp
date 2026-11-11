@@ -35,7 +35,7 @@ TonicRecreationAudioProcessor::~TonicRecreationAudioProcessor(){
     releaseResources();
 }
 
-bool TonicRecreationAudioProcessor::setWorldSharing(bool on) {
+bool TonicRecreationAudioProcessor::setWorldSharing(bool on, int confirmedRoot, int confirmedMode) {
     jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     if (!on) {
         stopTimer();
@@ -44,9 +44,18 @@ bool TonicRecreationAudioProcessor::setWorldSharing(bool on) {
         return true;
     }
     if (!worldLink.requested() && !worldLink.join()) return false;
-    syncCandidateRoot = -1;
-    syncCandidateMode = -1;
-    syncCandidateSince = juce::Time::getMillisecondCounterHiRes();
+    const int rawRoot = detectedRoot.load(std::memory_order_relaxed);
+    const int rawMode = detectedMode.load(std::memory_order_relaxed);
+    const bool alreadyConfirmed = rawRoot == confirmedRoot && rawMode == confirmedMode &&
+        confirmedRoot >= 0 && confirmedRoot < 12 &&
+        confirmedMode >= 0 && confirmedMode < 2;
+    syncCandidateRoot = alreadyConfirmed ? rawRoot : -1;
+    syncCandidateMode = alreadyConfirmed ? rawMode : -1;
+    // The Send button can only be clicked after the editor displayed a
+    // confirmed/saved key. Do not re-wait four seconds for that same key.
+    // New raw candidates still pass the original stability gate.
+    syncCandidateSince = juce::Time::getMillisecondCounterHiRes()
+                         - (alreadyConfirmed ? 4000.0 : 0.0);
     lastSyncMs = 0;
     lastSyncPacket = 0;
     startTimerHz(4);
