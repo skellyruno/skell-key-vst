@@ -10,14 +10,7 @@
 //  vertebrae that rises and falls with the music.
 // ---------------------------------------------------------------------------
 namespace {
-const juce::Colour kBg      (0xff0b0a09);   // warm black
-const juce::Colour kPanel   (0xff131210);
-const juce::Colour kPanelHi (0xff1b1915);
-const juce::Colour kLine    (0xff2f2b23);
-const juce::Colour kBone    (0xffe9e1cc);   // ivory bone
-const juce::Colour kBoneDim (0xff9b937d);
-const juce::Colour kBoneFaint(0xff4d483c);
-const juce::Colour kAccent  (0xffb6f56a);   // ecto green
+// Per-instance palette is supplied by SkellCore/SkullTheme.h.
 
 const char* const sharpNames[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 const char* const flatNames [12] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
@@ -105,8 +98,8 @@ public:
         const auto kBoneDim=palette_.boneDim,kLine=palette_.line;
         auto r = button.getLocalBounds().toFloat().reduced(0.5f);
         auto fill = kPanelHi;
-        if (down) fill = juce::Colour(0xff3a4a22);
-        else if (highlighted) fill = juce::Colour(0xff26231c);
+        if (down) fill = palette_.panelHi.interpolatedWith(palette_.accent,.26f);
+        else if (highlighted) fill = palette_.panelHi.interpolatedWith(palette_.accent,.12f);
         const bool mini = button.getComponentID() == "mini";
         if (mini && button.getToggleState()) fill = kAccent;
         g.setColour(fill); g.fillRect(r);
@@ -187,10 +180,10 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     doubleButton.onClick = [this] {
         if (doubleButton.getToggleState()) halfButton.setToggleState(false, juce::dontSendNotification);
         bpmFactor = doubleButton.getToggleState() ? 2.0f : 1.0f; timerCallback(); };
-    pauseButton.setButtonText("Send to Skelltune");
+    pauseButton.setButtonText("Send scale MIDI");
     pauseButton.setClickingTogglesState(true);
     pauseButton.setEnabled(false);
-    pauseButton.setTooltip("Send the detected scale to your autotune as MIDI notes (also copies the key to the clipboard). Set the autotune to take its scale from MIDI.");
+    pauseButton.setTooltip("Send scale as MIDI notes and copy the key. To connect directly to SkellyTune, click JOIN WORLD here and enable FOLLOW SKELLKEY in Tune's MORE panel.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
@@ -330,7 +323,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const bool haveKey = root >= 0;
         if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); }
         pauseButton.setEnabled(haveKey);
-        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending scale" : "Send to Skelltune");
+        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending MIDI" : "Send scale MIDI");
     }
     previewPc = processor.getPreviewPitchClass();
     bpmNow = juce::String(view.bpmText).getFloatValue();

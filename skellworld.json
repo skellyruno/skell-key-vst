@@ -1,0 +1,14 @@
+{
+  "schema": "skellworld-plugin/1",
+  "product_id": "skell.key",
+  "name": "Skell Key",
+  "manufacturer": "Independent Recreation",
+  "plugin_code": "TnRc",
+  "bundle_id": "audio.independent.tonic-recreation",
+  "connection": "explicit-opt-in-loopback",
+  "capabilities": [
+    "presence",
+    "musical-key-source",
+    "informational-events"
+  ]
+}

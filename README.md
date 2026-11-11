@@ -65,3 +65,11 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 - Window default 495 x 405 (10 % smaller).
 - Key (file mode): the opening/closing tonic-triad evidence is weighted 2.5x higher. Real-composition key accuracy 108 -> 118 / 150, synthetic 224 -> 225 / 288. Higher weights score better on pieces but flip the malta beat to minor, so 1.0 is the compromise.
 - Tempo: the final period is refined to ~0.1 % so a 156 BPM loop reads 156.07, and trimmed cuts of the malta beat now all read 149.9-150.1.
+
+## Shared SkellCore skull themes + SkellWorld key link
+
+The header skull-key mark now uses the original SkellKey drawing shared via `SkellCore/SkullTheme.h`. Clicking the **small skull key in the header** cycles four per-instance skins: Ossuary (the original SkellKey colors), Neon, Ivory and Obsidian. The **large central skeleton** still plays the detected musical key—its original behavior is unchanged. Skin selections are UI-only and saved in a non-automatable state property.
+
+Click **JOIN WORLD** in the footer to send stable, confident major/minor detections to the local SkellWorld hub (`127.0.0.1:48673`), then enable **FOLLOW SKELLKEY** under **MORE** in SkellyTune. Key detection uses a dedicated message-thread timer while joined, never the audio callback. The old **Send scale MIDI** button still emits MIDI notes; that is a separate feature from direct SkellWorld linking.
+
+Connections are **off by default**. The two plugins work normally without the hub, and no audio or preset data is sent. The direct link supplies a suggestion for a temporary tuning mask; SkellyTune's saved key/scale, custom notes, DSP latency and automation IDs are unchanged. Connecting to a local hub does not authenticate it; do not use v1 events for arbitrary remote commands.
