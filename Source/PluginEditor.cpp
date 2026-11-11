@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <SkellCore/SkullTheme.h>
 #include <array>
 #include <cmath>
 
@@ -9,14 +10,7 @@
 //  vertebrae that rises and falls with the music.
 // ---------------------------------------------------------------------------
 namespace {
-const juce::Colour kBg      (0xff0b0a09);   // warm black
-const juce::Colour kPanel   (0xff131210);
-const juce::Colour kPanelHi (0xff1b1915);
-const juce::Colour kLine    (0xff2f2b23);
-const juce::Colour kBone    (0xffe9e1cc);   // ivory bone
-const juce::Colour kBoneDim (0xff9b937d);
-const juce::Colour kBoneFaint(0xff4d483c);
-const juce::Colour kAccent  (0xffb6f56a);   // ecto green
+// Per-instance palette is supplied by SkellCore/SkullTheme.h.
 
 const char* const sharpNames[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 const char* const flatNames [12] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
@@ -44,7 +38,8 @@ bool isAudioFile(const juce::String& path) {
 }
 
 // A card with corner "bone brackets" instead of a full, heavy frame.
-void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
+void drawCard(juce::Graphics& g, juce::Rectangle<float> r, const skellcore::ui::SkullPalette& palette) {
+    const auto kPanel=palette.panel, kLine=palette.line, kBoneDim=palette.boneDim;
     g.setColour(kPanel);  g.fillRect(r);
     g.setColour(kLine);   g.drawRect(r, 1.0f);
     const float L = 9.0f;
@@ -58,27 +53,9 @@ void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
     g.strokePath(p, juce::PathStrokeType(1.4f));
 }
 
-// Skull-bowed skeleton key, about 74 x 30 units.
-void drawKeyMark(juce::Graphics& g, float x, float y, juce::Colour bone, juce::Colour hole) {
-    g.setColour(bone);
-    g.fillEllipse(x + 1.0f, y + 0.0f, 25.0f, 23.0f);                     // cranium
-    g.fillRoundedRectangle(x + 6.5f, y + 17.0f, 14.0f, 11.0f, 3.0f);     // jaw
-    g.fillRoundedRectangle(x + 25.0f, y + 10.5f, 48.0f, 4.2f, 1.6f);     // shaft
-    g.fillRoundedRectangle(x + 33.0f, y + 7.0f, 3.2f, 11.5f, 1.2f);      // collar
-    g.fillRect(x + 56.0f, y + 14.0f, 4.2f, 9.0f);                        // bit teeth
-    g.fillRect(x + 63.0f, y + 14.0f, 4.2f, 6.0f);
-    g.fillRect(x + 69.5f, y + 14.0f, 3.5f, 10.0f);
-    g.setColour(hole);
-    g.fillEllipse(x + 6.2f, y + 8.4f, 6.4f, 6.8f);                       // eye sockets
-    g.fillEllipse(x + 14.6f, y + 8.4f, 6.4f, 6.8f);
-    juce::Path nose; nose.addTriangle(x + 13.5f, y + 15.0f, x + 11.6f, y + 19.0f, x + 15.4f, y + 19.0f);
-    g.fillPath(nose);
-    for (int i = 0; i < 3; ++i)                                           // teeth gaps
-        g.fillRect(x + 9.6f + 3.4f * (float) i, y + 22.0f, 1.0f, 5.0f);
-}
-
 // Row of key-bit teeth used as a meter. Filled teeth show the value.
-void drawTeeth(juce::Graphics& g, juce::Rectangle<float> r, float value, int count = 10) {
+void drawTeeth(juce::Graphics& g, juce::Rectangle<float> r, float value, const skellcore::ui::SkullPalette& palette, int count = 10) {
+    const auto kAccent=palette.accent,kBoneFaint=palette.boneFaint;
     static const float heights[10] = {0.55f, 0.85f, 0.65f, 1.0f, 0.5f, 0.9f, 0.7f, 1.0f, 0.6f, 0.8f};
     const float slot = r.getWidth() / (float) count, w = slot * 0.62f;
     const int lit = juce::jlimit(0, count, juce::roundToInt(value * (float) count));
@@ -108,17 +85,21 @@ public:
 // Flat, squared bone buttons.
 class SkellLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
-    SkellLookAndFeel() {
-        setColour(juce::TextButton::buttonColourId, kPanelHi);
-        setColour(juce::TextButton::textColourOffId, kBone);
-        setColour(juce::TextButton::textColourOnId, kBone);
+    explicit SkellLookAndFeel(skellcore::ui::SkullPalette theme) { setPalette(theme); }
+    void setPalette(skellcore::ui::SkullPalette theme) {
+        palette_=theme;
+        setColour(juce::TextButton::buttonColourId, palette_.panelHi);
+        setColour(juce::TextButton::textColourOffId, palette_.bone);
+        setColour(juce::TextButton::textColourOnId, palette_.bone);
     }
     void drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
                               bool highlighted, bool down) override {
+        const auto kPanelHi=palette_.panelHi,kAccent=palette_.accent;
+        const auto kBoneDim=palette_.boneDim,kLine=palette_.line;
         auto r = button.getLocalBounds().toFloat().reduced(0.5f);
         auto fill = kPanelHi;
-        if (down) fill = juce::Colour(0xff3a4a22);
-        else if (highlighted) fill = juce::Colour(0xff26231c);
+        if (down) fill = palette_.panelHi.interpolatedWith(palette_.accent,.26f);
+        else if (highlighted) fill = palette_.panelHi.interpolatedWith(palette_.accent,.12f);
         const bool mini = button.getComponentID() == "mini";
         if (mini && button.getToggleState()) fill = kAccent;
         g.setColour(fill); g.fillRect(r);
@@ -135,6 +116,7 @@ public:
         return makeFont(juce::jmin(12.5f, (float) buttonHeight * 0.46f), true, 0.06f);
     }
     void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) override {
+        const auto kBone=palette_.bone,kBoneDim=palette_.boneDim,kAccent=palette_.accent;
         g.setColour(button.isEnabled() ? kBone : kBoneDim);
         const bool mini = button.getComponentID() == "mini";
         g.setFont(mini ? makeFont((float) button.getHeight() * 0.64f, true, 0.02f) : getTextButtonFont(button, button.getHeight()));
@@ -143,10 +125,13 @@ public:
         g.drawFittedText(mini ? button.getButtonText() : button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
                          juce::Justification::centred, 1, 0.85f);
     }
+private:
+    skellcore::ui::SkullPalette palette_;
 };
 
 TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor& p)
-  : AudioProcessorEditor(&p), processor(p) {
+  : AudioProcessorEditor(&p), processor(p), palette_(skellcore::ui::skullPalette(p.getSkullSkin())),
+    lastSkin_(p.getSkullSkin()) {
     setTitle("Skell Key");
     // The design space is 600 x 380; the default window is 85 % of that.
     setSize(defaultWidth, defaultHeight);
@@ -162,13 +147,29 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     };
     scene->onStateChange = [this] { repaint(); };
     addAndMakeVisible(*scene);
+    skullThemeClick=std::make_unique<SceneHitButton>();
+    skullThemeClick->setTooltip("Click skull key to cycle SKELL skins");
+    skullThemeClick->onClick=[this] {
+        processor.setSkullSkin(skellcore::ui::nextSkin(processor.getSkullSkin()));
+        timerCallback();
+    };
+    skullThemeClick->onStateChange=[this]{repaint();};
+    addAndMakeVisible(*skullThemeClick);
     resized();
 
-    look = std::make_unique<SkellLookAndFeel>();
+    look = std::make_unique<SkellLookAndFeel>(palette_);
     for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) {
         b->setLookAndFeel(look.get());
         addAndMakeVisible(b);
     }
+    worldButton_.setTooltip("Join the local SkellWorld hub and share a stable detected major/minor key. No audio or remote control is sent.");
+    worldButton_.setLookAndFeel(look.get());
+    addAndMakeVisible(worldButton_);
+    worldButton_.onClick=[this] {
+        if(processor.worldLink.requested()) processor.leaveWorld();
+        else processor.joinWorld();
+        timerCallback();
+    };
     halfButton.setComponentID("mini"); doubleButton.setComponentID("mini");
     halfButton.setTooltip("Tempo is double what it should be: halve it");
     doubleButton.setTooltip("Tempo is half what it should be: double it");
@@ -179,10 +180,10 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     doubleButton.onClick = [this] {
         if (doubleButton.getToggleState()) halfButton.setToggleState(false, juce::dontSendNotification);
         bpmFactor = doubleButton.getToggleState() ? 2.0f : 1.0f; timerCallback(); };
-    pauseButton.setButtonText("Send to Skelltune");
+    pauseButton.setButtonText("Send scale MIDI");
     pauseButton.setClickingTogglesState(true);
     pauseButton.setEnabled(false);
-    pauseButton.setTooltip("Send the detected scale to your autotune as MIDI notes (also copies the key to the clipboard). Set the autotune to take its scale from MIDI.");
+    pauseButton.setTooltip("Send scale as MIDI notes and copy the key. To connect directly to SkellyTune, click JOIN WORLD here and enable FOLLOW SKELLKEY in Tune's MORE panel.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
@@ -221,12 +222,24 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
 TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setLookAndFeel(nullptr);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &worldButton_ }) b->setLookAndFeel(nullptr);
+    skullThemeClick.reset();
     scene.reset();
     look.reset();
 }
 
 void TonicRecreationAudioProcessorEditor::timerCallback() {
+    const auto requestedSkin=processor.getSkullSkin();
+    if(requestedSkin!=lastSkin_) {
+        lastSkin_=requestedSkin;
+        palette_=skellcore::ui::skullPalette(requestedSkin);
+        if(look)look->setPalette(palette_);
+        repaint();
+    }
+    const bool worldOnline=processor.worldLink.online();
+    const auto newWorldText=worldOnline ? "WORLD " + juce::String(processor.worldLink.peerCount())
+        : (processor.worldLink.requested() ? juce::String("CONNECTING") : juce::String("JOIN WORLD"));
+    if(worldButton_.getButtonText()!=newWorldText)worldButton_.setButtonText(newWorldText);
     const bool offline = processor.isOfflineMode();
     const bool startingFile = offline && processor.isFileBusy() && processor.getFileAnalyzedSeconds() < 0.25f;
     const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
@@ -310,7 +323,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const bool haveKey = root >= 0;
         if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); }
         pauseButton.setEnabled(haveKey);
-        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending scale" : "Send to Skelltune");
+        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending MIDI" : "Send scale MIDI");
     }
     previewPc = processor.getPreviewPitchClass();
     bpmNow = juce::String(view.bpmText).getFloatValue();
@@ -321,6 +334,9 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
 
 // --------------------------------------------------------------------------- painting
 void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     g.fillAll(kBg);
     g.addTransform(juce::AffineTransform::scale(scale()));
     paintHeader(g);
@@ -339,7 +355,7 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
         const float pattern[] = {9.0f, 6.0f};
         juce::PathStrokeType(2.0f).createDashedStroke(stroked, dashes, pattern, 2);
         g.fillPath(stroked);
-        drawKeyMark(g, all.getCentreX() - 37.0f, all.getCentreY() - 70.0f, kBone, kBg);
+        skellcore::ui::drawSkullKeyMark(g, all.getCentreX() - 37.0f, all.getCentreY() - 70.0f, kBone, kBg);
         drawText(g, "DROP AUDIO TO UNLOCK", all.withTrimmedTop(all.getCentreY() - 28.0f).withHeight(60.0f), 24.0f, true, kBone,
                  juce::Justification::centred, 0.12f);
         drawText(g, "wav  aiff  flac  ogg  mp3", all.withTrimmedTop(all.getCentreY() + 30.0f).withHeight(24.0f), 12.0f, false, kBoneDim,
@@ -348,7 +364,10 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
-    drawKeyMark(g, 16.0f, 11.0f, kBone, kBg);
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
+    skellcore::ui::drawSkullKeyMark(g, 16.0f, 11.0f, kBone, kBg);
     drawText(g, "SKELL KEY", { 100.0f, 9.0f, 220.0f, 26.0f }, 21.0f, true, kBone,
              juce::Justification::centredLeft, 0.16f);
     drawText(g, "KEY   /   TEMPO   /   TUNING", { 101.0f, 33.0f, 240.0f, 14.0f }, 9.0f, false, kBoneDim,
@@ -379,8 +398,11 @@ void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> card(14.0f, 66.0f, 522.0f, 200.0f);
-    drawCard(g, card);
+    drawCard(g, card, palette_);
     drawText(g, "DETECTED KEY", { 30.0f, 76.0f, 200.0f, 14.0f }, 9.0f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
 
@@ -397,7 +419,7 @@ void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
         drawText(g, view.keyText, { 28.0f, 100.0f, 230.0f, 56.0f }, 30.0f, true, kBoneDim);
     }
     drawText(g, view.keyHint, { 30.0f, 172.0f, 200.0f, 14.0f }, 11.0f, false, kBoneDim);
-    drawTeeth(g, { 30.0f, 190.0f, 150.0f, 12.0f }, view.keyConfidence);
+    drawTeeth(g, { 30.0f, 190.0f, 150.0f, 12.0f }, view.keyConfidence, palette_);
     drawText(g, view.candidates, { 30.0f, 212.0f, 228.0f, 14.0f }, 11.0f, false, kBoneDim);
     drawText(g, view.chordText, { 30.0f, 232.0f, 228.0f, 14.0f }, 11.0f, true, kBone);
 
@@ -408,6 +430,9 @@ void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Rectangle<float> area) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     // --- keyboard: one octave, C..B. White keys glow with the live chroma of that
     // pitch class; keys in the detected key are bright, the tonic is accent green.
     const float kbTop = area.getBottom() - 62.0f, kbH = 58.0f;
@@ -521,8 +546,11 @@ void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Re
 }
 
 void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(14.0f, 276.0f, 257.0f, 100.0f);
-    drawCard(g, r);
+    drawCard(g, r, palette_);
     drawText(g, "TEMPO", { r.getX() + 16.0f, r.getY() + 9.0f, 100.0f, 14.0f }, 9.0f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
     const bool have = view.bpmText != "--";
@@ -534,12 +562,15 @@ void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
                  juce::Justification::centredLeft, 0.12f);
     }
     drawText(g, view.bpmHint, { r.getX() + 16.0f, r.getY() + 74.0f, 160.0f, 14.0f }, 11.0f, false, kBoneDim);
-    drawTeeth(g, { r.getRight() - 100.0f, r.getY() + 16.0f, 84.0f, 12.0f }, view.bpmConfidence, 8);
+    drawTeeth(g, { r.getRight() - 100.0f, r.getY() + 16.0f, 84.0f, 12.0f }, view.bpmConfidence, palette_, 8);
 }
 
 void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(279.0f, 276.0f, 257.0f, 100.0f);
-    drawCard(g, r);
+    drawCard(g, r, palette_);
     drawText(g, "REFERENCE A", { r.getX() + 16.0f, r.getY() + 9.0f, 120.0f, 14.0f }, 9.0f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
     drawText(g, view.refText, { r.getX() + 16.0f, r.getY() + 28.0f, 130.0f, 44.0f }, 38.0f, true,
@@ -571,13 +602,16 @@ void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) 
 }
 
 void TonicRecreationAudioProcessorEditor::paintFooter(juce::Graphics& g) {
+    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
+    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
+    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(14.0f, 386.0f, 522.0f, 52.0f);
-    drawCard(g, r);
+    drawCard(g, r, palette_);
     if (view.busy) {
         g.setColour(kAccent);
         g.fillRect(r.getX() + 1.0f, r.getY() + 1.0f, (r.getWidth() - 2.0f) * view.progress, 2.0f);
     }
-    drawText(g, view.status, { r.getX() + 16.0f, r.getY() + 4.0f, 290.0f, r.getHeight() - 8.0f }, 11.5f, false,
+    drawText(g, view.status, { r.getX() + 16.0f, r.getY() + 4.0f, 172.0f, r.getHeight() - 8.0f }, 11.5f, false,
              processor.fileFailed() ? juce::Colour(0xffe58a6b) : kBoneDim);
 }
 
@@ -590,6 +624,8 @@ void TonicRecreationAudioProcessorEditor::resized() {
     pauseButton.setBounds(fit(332.0f, 16.0f, 134.0f, 24.0f));
     resetButton.setBounds(fit(472.0f, 16.0f, 62.0f, 24.0f));
     if (scene != nullptr) scene->setBounds(fit(sceneArea.getX(), sceneArea.getY(), sceneArea.getWidth(), sceneArea.getHeight()));
+    if (skullThemeClick) skullThemeClick->setBounds(fit(14.0f, 8.0f, 78.0f, 34.0f));
+    worldButton_.setBounds(fit(217.0f, 398.0f, 125.0f, 28.0f));
     openFileButton.setBounds(fit(350.0f, 398.0f, 90.0f, 28.0f));
     liveButton.setBounds(fit(444.0f, 398.0f, 84.0f, 28.0f));
     halfButton.setBounds(fit(187.0f, 312.0f, 24.0f, 16.0f));

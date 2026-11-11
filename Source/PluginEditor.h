@@ -38,13 +38,16 @@ private:
     void paintFooter(juce::Graphics&);
 
     TonicRecreationAudioProcessor& processor;
+    skellcore::ui::SkullPalette palette_;
+    skellcore::ui::SkullSkin lastSkin_ = skellcore::ui::SkullSkin::Ossuary;
+    juce::TextButton worldButton_{"JOIN WORLD"};
     juce::TextButton pauseButton {"Pause"}, resetButton {"Reset"};
     juce::TextButton openFileButton {"Open Audio"}, liveButton {"Live Input"};
     juce::TextButton halfButton {"/2"}, doubleButton {"x2"};
     float bpmFactor = 1.0f;   // user octave correction (x0.5 / x2) applied to the displayed tempo
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<SkellLookAndFeel> look;
-    std::unique_ptr<SceneHitButton> scene;
+    std::unique_ptr<SceneHitButton> scene, skullThemeClick;
     const juce::Rectangle<float> sceneArea { 274.0f, 76.0f, 250.0f, 182.0f };
     float level = 0.0f, bpmNow = 0.0f, handL = 0.0f, handR = 0.0f;
     int previewPc = -1;

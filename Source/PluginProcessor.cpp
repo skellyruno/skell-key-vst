@@ -29,7 +29,7 @@ TonicRecreationAudioProcessor::TonicRecreationAudioProcessor()
     for(int i=0;i<N;++i) hannWindow[(size_t)i]=0.5f-0.5f*std::cos(float(2*pi*i/(N-1)));
     resetAnalysis();
 }
-TonicRecreationAudioProcessor::~TonicRecreationAudioProcessor(){releaseResources();}
+TonicRecreationAudioProcessor::~TonicRecreationAudioProcessor(){leaveWorld();releaseResources();}
 juce::AudioProcessorValueTreeState::ParameterLayout TonicRecreationAudioProcessor::createParameterLayout(){
     juce::AudioProcessorValueTreeState::ParameterLayout p;
     p.add(std::make_unique<juce::AudioParameterBool>("preferFlats","Prefer flats",false));
@@ -1192,6 +1192,35 @@ void TonicRecreationAudioProcessor::renderPreview(juce::AudioBuffer<float>& buff
     if(previewClock>=previewTotal){previewRunning=false;for(auto& v:voices)v.active=false;previewNote.store(-1,std::memory_order_relaxed);}
 }
 juce::AudioProcessorEditor* TonicRecreationAudioProcessor::createEditor(){return new TonicRecreationAudioProcessorEditor(*this);}
+void TonicRecreationAudioProcessor::timerCallback() {
+    if (!worldLink.online()) return;
+    const int root=getDetectedRoot(),mode=getDetectedMode();
+    const float evidence=getConfidence();
+    // Only share stable, confident major/minor detections, never the audio.
+    if(root<0 || root>=12 || (mode!=0 && mode!=1) ||
+       !std::isfinite(evidence) || evidence<0.55f) {
+        worldCandidate_=0;worldStable_=0;worldLastSent_=0;return;
+    }
+    const int code=1+root+12*mode;
+    if(worldCandidate_!=code) {worldCandidate_=code;worldStable_=1;return;}
+    if(worldStable_<4) ++worldStable_;
+    if(worldStable_<4)return;
+    // A periodic refresh lets a SkellyTune instance join after detection.
+    if(worldLastSent_!=code || ++worldRefresh_>=10) {
+        if(worldLink.publishMusicalKey({root,mode})) {
+            worldLastSent_=code;worldRefresh_=0;
+        }
+    }
+}
 void TonicRecreationAudioProcessor::getStateInformation(juce::MemoryBlock& dest){auto xml=state.copyState().createXml();copyXmlToBinary(*xml,dest);}
-void TonicRecreationAudioProcessor::setStateInformation(const void* data,int size){if(auto xml=getXmlFromBinary(data,size);xml&&xml->hasTagName(state.state.getType()))state.replaceState(juce::ValueTree::fromXml(*xml));}
+void TonicRecreationAudioProcessor::setStateInformation(const void* data,int size){
+    if(auto xml=getXmlFromBinary(data,size);xml&&xml->hasTagName(state.state.getType())) {
+        auto restored=juce::ValueTree::fromXml(*xml);
+        if(!restored.isValid())return;
+        // UI property only; neither MIDI nor processor params are changed.
+        const auto raw=static_cast<int>(restored.getProperty("skellSkullSkin",0));
+        skinIndex_.store(juce::jlimit(0,3,raw),std::memory_order_release);
+        state.replaceState(restored);
+    }
+}
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter(){return new TonicRecreationAudioProcessor();}
