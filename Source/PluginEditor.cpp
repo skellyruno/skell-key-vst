@@ -313,9 +313,8 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     liveButton.onClick = [this] {
         hintDismissed = false; resetGate(); bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         processor.returnToLive();
-        pauseButton.setToggleState(false, juce::dontSendNotification);
-        processor.setScaleOutput(false);
-        processor.setWorldSharing(false);
+        // Keep an explicit SEND TO TUNE session active when changing from
+        // file analysis to live input. Publishing waits for a confirmed key.
         timerCallback();
     };
     startTimerHz(30);
@@ -636,12 +635,14 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const float target = juce::jlimit(0.0f, 1.0f, (db + 54.0f) / 54.0f);
         level += (target - level) * (target > level ? 0.6f : 0.12f);
     }
-    {   // Autotune button: usable only once a key exists; turns itself off if the key is lost.
+    {   // Once clicked, automatic following survives silence and source changes.
+        // Do not require the user to toggle sharing again after each phrase.
         const bool haveKey = root >= 0;
-        if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); processor.setWorldSharing(false); }
-        pauseButton.setEnabled(haveKey);
-        pauseButton.setButtonText(!pauseButton.getToggleState() ? "SEND TO TUNE"
-            : (processor.isWorldOnline() ? "SENDING TO TUNE" : "WAITING FOR HUB"));
+        const bool sending = pauseButton.getToggleState();
+        pauseButton.setEnabled(haveKey || sending); // can always click OFF
+        pauseButton.setButtonText(!sending ? "SEND TO TUNE"
+            : (!processor.isWorldOnline() ? "WAITING FOR HUB"
+                : (haveKey ? "SENDING TO TUNE" : "WAITING FOR KEY")));
     }
     {   // Octave hint: only while no manual correction is active.
         const float alt = processor.getAltTempoRatio();
