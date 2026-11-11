@@ -1,0 +1,17 @@
+# Generated build output
+/build/
+/out/
+.vs/
+.cache/
+CMakeFiles/
+CMakeCache.txt
+*.obj
+*.o
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.exe
+*.vst3
+*.zip
+__pycache__/

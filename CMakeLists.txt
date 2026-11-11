@@ -13,23 +13,32 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
-# Shared SKELL identities and theme/key link, pinned to an immutable revision.
-include(FetchContent)
-FetchContent_Declare(SkellCoreShared
-    GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
-    GIT_TAG bca5eb7cef326772499a0b4afe0e5389db918d3a
-    SOURCE_SUBDIR SkellCore)
-FetchContent_MakeAvailable(SkellCoreShared)
+# SkellCore is the canonical inter-plugin protocol. Pin the revision so
+# recompiling old VST3 releases cannot silently change their wire format.
+if(DEFINED SKELLCORE_PATH AND EXISTS "${SKELLCORE_PATH}/SkellCore/CMakeLists.txt")
+    add_subdirectory("${SKELLCORE_PATH}/SkellCore" "${CMAKE_CURRENT_BINARY_DIR}/SkellCore")
+else()
+    include(FetchContent)
+    FetchContent_Declare(SkellCoreRepo
+        GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
+        GIT_TAG 568a17fd1956065f06d20813f5e57c3621c1cac9
+        GIT_SHALLOW FALSE)
+    FetchContent_GetProperties(SkellCoreRepo)
+    if(NOT skellcorerepo_POPULATED)
+        FetchContent_Populate(SkellCoreRepo)
+        add_subdirectory("${skellcorerepo_SOURCE_DIR}/SkellCore" "${CMAKE_CURRENT_BINARY_DIR}/SkellCore")
+    endif()
+endif()
 
 juce_add_plugin(TonicRecreation
-    COMPANY_NAME "Independent Recreation"
+    COMPANY_NAME "Skell Audio"
     BUNDLE_ID "audio.independent.tonic-recreation"
     PLUGIN_MANUFACTURER_CODE InRc
     PLUGIN_CODE TnRc
     FORMATS VST3
-    PRODUCT_NAME "TONIC-inspired"
+    PRODUCT_NAME "Skell Key"
     IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT TRUE
     IS_MIDI_EFFECT FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
@@ -48,8 +57,17 @@ target_link_libraries(TonicRecreation PRIVATE
     juce::juce_audio_processors
     juce::juce_dsp
     juce::juce_gui_extra
-    SkellCore::DSP SkellCore::UI)
+    SkellCore::UI)
 target_compile_definitions(TonicRecreation PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0)
+
+# Standalone protocol validation. Does not need JUCE or a Windows machine.
+option(SKELL_KEY_BUILD_SYNC_TESTS "Build SkellCore key/scale/A4 protocol tests" OFF)
+if(SKELL_KEY_BUILD_SYNC_TESTS)
+    enable_testing()
+    add_executable(SkellKeyWorldTuningTests tests/test_world_tuning.cpp)
+    target_link_libraries(SkellKeyWorldTuningTests PRIVATE SkellCore::DSP)
+    add_test(NAME SkellKeyWorldTuningTests COMMAND SkellKeyWorldTuningTests)
+endif()

@@ -29,7 +29,75 @@ TonicRecreationAudioProcessor::TonicRecreationAudioProcessor()
     for(int i=0;i<N;++i) hannWindow[(size_t)i]=0.5f-0.5f*std::cos(float(2*pi*i/(N-1)));
     resetAnalysis();
 }
-TonicRecreationAudioProcessor::~TonicRecreationAudioProcessor(){leaveWorld();releaseResources();}
+TonicRecreationAudioProcessor::~TonicRecreationAudioProcessor(){
+    stopTimer();
+    worldLink.leave();
+    releaseResources();
+}
+
+bool TonicRecreationAudioProcessor::setWorldSharing(bool on) {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    if (!on) {
+        stopTimer();
+        worldLink.leave();
+        lastSyncPacket = 0;
+        return true;
+    }
+    if (!worldLink.requested() && !worldLink.join()) return false;
+    syncCandidateRoot = -1;
+    syncCandidateMode = -1;
+    syncCandidateSince = juce::Time::getMillisecondCounterHiRes();
+    lastSyncMs = 0;
+    lastSyncPacket = 0;
+    startTimerHz(4);
+    timerCallback();
+    return true;
+}
+
+void TonicRecreationAudioProcessor::timerCallback() {
+    if (!worldLink.requested()) return;
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const int rawRoot = detectedRoot.load(std::memory_order_relaxed);
+    const int rawMode = detectedMode.load(std::memory_order_relaxed);
+    const bool offline = offlineMode.load(std::memory_order_relaxed);
+    if (rawRoot != syncCandidateRoot || rawMode != syncCandidateMode) {
+        syncCandidateRoot = rawRoot;
+        syncCandidateMode = rawMode;
+        syncCandidateSince = now;
+    }
+    // Reuse the same live confidence gate as the editor. Never announce
+    // partial file analysis or unstable key changes to downstream instruments.
+    const bool stable = rawRoot >= 0 && rawRoot < 12 && rawMode >= 0 && rawMode < 2 &&
+                        !(offline && fileBusy.load(std::memory_order_relaxed)) &&
+                        (offline || now - syncCandidateSince >= 4000.0);
+    int root = stable ? rawRoot : -1;
+    int mode = stable ? rawMode : -1;
+    if (root < 0 && rawRoot < 0) {
+        const int savedRoot = getSavedRoot(), savedMode = getSavedMode();
+        if (savedRoot >= 0 && savedRoot < 12 && savedMode >= 0 && savedMode < 2 && !offline) {
+            root = savedRoot;
+            mode = savedMode;
+        }
+    }
+    if (root < 0 || !worldLink.online()) return;
+    const float hz = detectedTuningHz.load(std::memory_order_relaxed);
+    const float tc = tuningConfidence.load(std::memory_order_relaxed);
+    const float savedHz = getSavedHz();
+    // Standard concert tuning is a *fallback*, not an invented measurement.
+    const double a4 = tc >= 0.03f && std::isfinite(hz) && hz >= 400.0f && hz <= 480.0f ?
+                         hz : (savedHz >= 400.0f && savedHz <= 480.0f ? savedHz : 440.0);
+    const auto tuning = skellcore::world::makeMusicalTuning(root,mode,a4);
+    if (!tuning.valid()) return;
+    const auto packed = skellcore::world::packMusicalTuning(tuning,1);
+    const auto timeMs = juce::Time::getMillisecondCounter();
+    // Re-announce every second: late receivers can join without reopening UI.
+    if (packed != lastSyncPacket || (std::uint32_t)(timeMs-lastSyncMs) >= 1000u) {
+        if (worldLink.publishMusicalTuning(tuning)) {
+            lastSyncPacket = packed;
+            lastSyncMs = timeMs;
+        }
+    }
+}
 juce::AudioProcessorValueTreeState::ParameterLayout TonicRecreationAudioProcessor::createParameterLayout(){
     juce::AudioProcessorValueTreeState::ParameterLayout p;
     p.add(std::make_unique<juce::AudioParameterBool>("preferFlats","Prefer flats",false));
@@ -50,8 +118,9 @@ void TonicRecreationAudioProcessor::resetAnalysis(){
     chordRoot.store(-1);chordKind.store(-1);chordConfidence.store(0);
     transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
     transcribedChordBass.store(-1);transcribedChordEvidence.store(0);
+    chordHistCount.store(0);chordHistWrite.store(0);lastHistChord=-1;melodyHist.fill(0);for(auto& m:melodyShown)m.store(0);melodyNow.store(-1);melodyHold=0;
     detectedTuningHz.store(440.0f); tuningConfidence.store(0.0f);
-    detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0; loopFastBpm=0; weakTempoGate.reset(); tempoContinuity.reset();
+    altTempoRatio.store(0.0f); altStreak=0; altStreakRatio=0.0f; detectedBpm.store(0); bpmConfidence.store(0); lastStableBpm=0; loopFastBpm=0; weakTempoGate.reset(); tempoContinuity.reset();
     onsetHistory.fill(0); onsetWrite=onsetCount=onsetSamples=bpmAnalysisFrames=0;
     onsetEnergySum=onsetHighEnergySum=tempoLowpass=previousEnergy=previousHighEnergy=smoothedOnset=0;
     tempoSilentHops=0;
@@ -104,7 +173,72 @@ void TonicRecreationAudioProcessor::emitScaleMidi(juce::MidiBuffer& midi){
     }
     scaleSentMask=want;
 }
+static bool inKeyScale(int pc,int root,int mode){
+    static const bool maj[12]={1,0,1,0,1,1,0,1,0,1,0,1}, mnr[12]={1,0,1,1,0,1,0,1,1,0,1,0};
+    const int rel=((pc-root)%12+12)%12; return mode==1?mnr[rel]:maj[rel];
+}
+void TonicRecreationAudioProcessor::handleLiveEvent(int midi,bool on,int vel){
+    if(midi<0||midi>127) return;
+    if(on){
+        int played=midi;
+        const int root=detectedRoot.load(), mode=detectedMode.load();
+        if(scaleLock.load() && root>=0){                      // snap to the nearest note of the detected scale
+            static const int order[]={0,-1,1,-2,2,-3,3};
+            for(int d:order){ const int m=midi+d; if(m>=0&&m<=127&&inKeyScale(m%12,root,mode)){ played=m; break; } }
+        }
+        liveMap[(size_t)midi]=played;
+        LiveVoice* slot=nullptr;
+        for(auto& v:liveVoices) if(v.active&&v.midi==played){ slot=&v; break; }
+        if(!slot) for(auto& v:liveVoices) if(!v.active){ slot=&v; break; }
+        if(!slot){ slot=&liveVoices[0]; for(auto& v:liveVoices) if(v.age>slot->age) slot=&v; }
+        *slot=LiveVoice{true,true,played,0.0,0,0,juce::jlimit(0.2f,1.0f,(float)vel/110.0f)};
+        liveLast.store(played%12,std::memory_order_relaxed);
+    } else {
+        const int played=liveMap[(size_t)midi]; liveMap[(size_t)midi]=-1;
+        if(played<0) return;
+        for(auto& v:liveVoices) if(v.active&&v.held&&v.midi==played){ v.held=false; v.relAge=0; }
+    }
+}
+void TonicRecreationAudioProcessor::liveNote(int midi,bool on){
+    if(midi<0||midi>127) return;
+    int s1,n1,s2,n2; liveFifo.prepareToWrite(1,s1,n1,s2,n2);
+    if(n1>0){ liveQueue[(size_t)s1]=midi|(on?256:0)|(100<<9); liveFifo.finishedWrite(1); }
+}
+void TonicRecreationAudioProcessor::drainLiveInput(juce::MidiBuffer& midi){
+    for(const auto meta:midi){                                  // notes from a connected MIDI controller
+        const auto m=meta.getMessage();
+        if(m.isNoteOn()) handleLiveEvent(m.getNoteNumber(),true,m.getVelocity());
+        else if(m.isNoteOff()) handleLiveEvent(m.getNoteNumber(),false,0);
+        else if(m.isAllNotesOff()||m.isAllSoundOff()) for(int n=0;n<128;++n) handleLiveEvent(n,false,0);
+    }
+    int s1,n1,s2,n2; liveFifo.prepareToRead(liveFifo.getNumReady(),s1,n1,s2,n2);   // notes from the editor
+    auto take=[&](int s,int n){ for(int i=0;i<n;++i){ const int e=liveQueue[(size_t)(s+i)]; handleLiveEvent(e&255,(e&256)!=0,e>>9); } };
+    take(s1,n1); take(s2,n2); liveFifo.finishedRead(n1+n2);
+}
+void TonicRecreationAudioProcessor::renderLive(juce::AudioBuffer<float>& buffer){
+    const int n=buffer.getNumSamples(), chs=buffer.getNumChannels();
+    const double sr=std::max(1.0,currentSampleRate);
+    unsigned mask=0;
+    for(auto& v:liveVoices){
+        if(!v.active) continue;
+        const double inc=2.0*pi*440.0*std::pow(2.0,(v.midi-69)/12.0)/sr;
+        for(int i=0;i<n;++i){
+            const float ageS=(float)((double)v.age/sr);
+            const float env=0.35f+0.65f*std::exp(-ageS*3.0f), atk=std::min(1.0f,ageS*250.0f);
+            float rel=1.0f;
+            if(!v.held){ rel=1.0f-(float)((double)v.relAge/(sr*0.18)); if(rel<=0.0f){ v.active=false; break; } ++v.relAge; }
+            float s=0.0f;
+            for(int h=1;h<=5;++h) s+=(float)std::sin((double)h*v.phase)*std::exp(-ageS*0.5f*(float)h)/(float)h;
+            const float out=s*env*atk*rel*0.11f*v.vel;
+            for(int ch=0;ch<chs;++ch) buffer.getWritePointer(ch)[i]+=out;
+            v.phase+=inc; if(v.phase>2.0*pi) v.phase-=2.0*pi; ++v.age;
+        }
+        if(v.active&&v.held) mask|=1u<<(v.midi%12);
+    }
+    liveMask.store(mask,std::memory_order_relaxed);
+}
 void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,juce::MidiBuffer& midi){
+    drainLiveInput(midi);
     midi.clear();
     emitScaleMidi(midi);
     juce::ScopedNoDenormals nd;
@@ -117,6 +251,7 @@ void TonicRecreationAudioProcessor::processBlock(juce::AudioBuffer<float>& buffe
     }
     analyseBlock(buffer);
     renderPreview(buffer); // after analysis has copied the input, so the tone is never analysed
+    renderLive(buffer);
 }
 void TonicRecreationAudioProcessor::analyseBlock(juce::AudioBuffer<float>& buffer){
     // Refresh host tempo on the audio thread; never retain a playhead pointer.
@@ -179,6 +314,7 @@ bool TonicRecreationAudioProcessor::requestFileAnalysis(const juce::File& file) 
         const juce::ScopedLock lock(fileRequestLock);
         pendingFilePath=file.getFullPathName();
         displayedFileName=file.getFileName();
+        displayedFilePath=file.getFullPathName();
         pendingFileGeneration=fileRequestGeneration.fetch_add(1,std::memory_order_acq_rel)+1;
         fileRequestPending=true;
     }
@@ -200,9 +336,19 @@ void TonicRecreationAudioProcessor::returnToLive(){
         const juce::ScopedLock lock(fileRequestLock);
         fileRequestPending=false;
         displayedFileName.clear();
+        displayedFilePath.clear();
         pendingFilePath.clear();
     }
     requestReset();
+}
+juce::String TonicRecreationAudioProcessor::getFilePath() const {
+    const juce::ScopedLock lock(fileRequestLock);
+    return displayedFilePath;
+}
+void TonicRecreationAudioProcessor::retargetFile(const juce::File& renamed) {
+    const juce::ScopedLock lock(fileRequestLock);
+    displayedFilePath=renamed.getFullPathName();
+    displayedFileName=renamed.getFileName();
 }
 juce::String TonicRecreationAudioProcessor::getFileName() const {
     const juce::ScopedLock lock(fileRequestLock);
@@ -214,6 +360,7 @@ void TonicRecreationAudioProcessor::discardLiveQueue(){
     sampleFifo.finishedRead(b+d);
 }
 void TonicRecreationAudioProcessor::analyseAudioSample(float sample){
+    if(!std::isfinite(sample)) sample=0.0f; // a stray NaN/inf from a host or file must not poison the filters
     ++analyzedSamples;
     consumeTempoSample(sample);
     history[(size_t)historyWrite]=sample;
@@ -230,7 +377,7 @@ void TonicRecreationAudioProcessor::analyseFile(const juce::String& path, unsign
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(juce::File(path)));
     if (generation != fileRequestGeneration.load(std::memory_order_acquire)) return;
     if (!reader || reader->sampleRate <= 0.0 || reader->numChannels==0 || reader->lengthInSamples<=0) {
-        if (generation == fileRequestGeneration.load()) { fileError.store(true); fileBusy.store(false); }
+        if (generation == fileRequestGeneration.load()) { discardLiveQueue(); resetAnalysis(); fileError.store(true); fileBusy.store(false); } // never leave the previous file's key on screen
         return;
     }
     discardLiveQueue();
@@ -670,6 +817,16 @@ void TonicRecreationAudioProcessor::estimateTempo() {
     const float half=halfLag<=maxLag?corr[(size_t)halfLag]:0.0f;
     const float dbl=doubleLag>=minLag?corr[(size_t)doubleLag]:0.0f;
     tempoAmbiguity=juce::jlimit(0.0f,1.0f,std::max(half,dbl)/std::max(0.01f,corr[(size_t)bestLag]));
+    {   // Credible octave alternative, shown to the user as a hint on the /2 or x2 button.
+        const float own=std::max(0.01f,corr[(size_t)bestLag]);
+        float ratio=0.0f;
+        if(dbl>=0.90f*own && dbl>0.15f && bpm*2.0f<=220.0f) ratio=2.0f;
+        else if(half>=0.90f*own && half>0.15f && bpm*0.5f>=50.0f) ratio=0.5f;
+        // Show the hint only after the same alternative has been seen for a while (not a one-frame blip).
+        altStreak = (ratio!=0.0f && ratio==altStreakRatio) ? altStreak+1 : (ratio!=0.0f ? 1 : 0);
+        altStreakRatio = ratio;
+        altTempoRatio.store(altStreak>=20 ? ratio : 0.0f,std::memory_order_relaxed);
+    }
     const float originalConf=juce::jlimit(0.0f,1.0f,(chosenCorr-0.15f)/0.60f)
         *(1.0f-0.30f*tempoAmbiguity);
     const float conf0=strongPulse ? originalConf
@@ -912,6 +1069,7 @@ void TonicRecreationAudioProcessor::analyseWindow(){
                 slot=std::max(slot,v);
             }
         }
+        float melBest=0.0f, allMax=0.0f; int melMidi=-1;
         for (int midi=36;midi<=95;++midi) {
             const auto& b=best[(size_t)(midi-36)];
             float score=0.0f;
@@ -921,12 +1079,23 @@ void TonicRecreationAudioProcessor::analyseWindow(){
             const float noteSalience = std::sqrt(std::max(0.0f,score))*0.75f
                                       + std::sqrt(std::max(0.0f,fundamental))*0.25f;
             c[(size_t)(midi%12)] += noteSalience;
+            allMax=std::max(allMax,noteSalience);
+            if (midi>=55 && midi<=84 && b[0]>0.0f && noteSalience>melBest) { melBest=noteSalience; melMidi=midi; }
             // Separate mid-register chroma limits bias from low kick/bass energy
             // and high-register overtones without discarding those registers.
             if (midi >= 48 && midi <= 83) midChroma[(size_t)(midi%12)] += noteSalience;
             // Separate low-register tonal evidence.
             if (midi >= 36 && midi <= 59) bassChroma[(size_t)(midi%12)] += noteSalience;
         }
+        // Lead melody: the most salient mid-register note, when it clearly stands out.
+        if (melMidi>=0 && allMax>0.0f && melBest>=0.40f*allMax) {
+            const int pc=melMidi%12;
+            if (!holdResultsOnSilence) for (auto& v:melodyHist) v*=0.996f;
+            melodyHist[(size_t)pc]+=1.0f;
+            melodyNow.store(pc,std::memory_order_relaxed); melodyHold=4;
+            float mx=1.0e-6f; for (float v:melodyHist) mx=std::max(mx,v);
+            for (int i=0;i<12;++i) melodyShown[(size_t)i].store(melodyHist[(size_t)i]/mx,std::memory_order_relaxed);
+        } else if (melodyHold>0 && --melodyHold==0) melodyNow.store(-1,std::memory_order_relaxed);
     }
     // Normalize full-range and mid-register evidence independently.
     // A band with more candidate note bins should not win simply by mass.
@@ -1022,6 +1191,25 @@ void TonicRecreationAudioProcessor::analyseWindow(){
             relativeModeEvidence.bonus(root,mode),learned),root,mode};
     std::partial_sort(ranking.begin(),ranking.begin()+3,ranking.end(),
         [](const auto& a,const auto& b){return a.score>b.score;});
+    // Parallel-mode tie-break. When the leader is major but the major and minor third above its
+    // root carry about the same energy (a root+fifth texture, typical of bass-driven electronic music),
+    // the profiles cannot separate the two; prefer the same-root minor key if it is nearly as good.
+    // Cross-root comparisons are untouched. Tuned on GiantSteps+ excerpts (41 -> 49 of 67 exact), no
+    // change on the older sets.
+    {   constexpr float parallelMargin=0.20f, thirdAmbiguity=0.12f;
+        float kcSum=0.0f; for(int i=0;i<12;++i) kcSum+=std::max(0.0f,keyChroma[(size_t)i]);
+        if(ranking[0].mode==0 && kcSum>1.0e-9f){
+            const int r0=ranking[0].root;
+            const float mi=std::max(0.0f,keyChroma[(size_t)((r0+3)%12)])/kcSum,
+                        ma=std::max(0.0f,keyChroma[(size_t)((r0+4)%12)])/kcSum;
+            const float d=(mi-ma)/(mi+ma+0.01f); // +1 clearly minor third, -1 clearly major third
+            auto it=std::find_if(ranking.begin(),ranking.end(),[&](const auto& c){return c.root==r0&&c.mode==1;});
+            if(std::fabs(d)<thirdAmbiguity && it!=ranking.end() && ranking[0].score-it->score<parallelMargin){
+                const auto sel=*it; for(auto w=it;w!=ranking.begin();--w)*w=*(w-1);
+                ranking[0]=sel; ranking[0].score=std::max(ranking[0].score,ranking[1].score);
+            }
+        }
+    }
     const auto consensus=temporalKeyConsensus.propose(ranking[0].root,ranking[0].mode,
                                                        phraseTracker,majorProfile,minorProfile);
     if(consensus.root>=0){
@@ -1128,6 +1316,13 @@ void TonicRecreationAudioProcessor::analyseWindow(){
         transcribedChordQuality.store(transcribed.quality);
         transcribedChordBass.store(transcribed.inversion>0 ? transcribed.bass : -1);
         transcribedChordEvidence.store(transcribed.evidence);
+        const int packed=transcribed.root*8+juce::jlimit(0,7,transcribed.quality);
+        if (packed!=lastHistChord) {      // record each distinct chord change for the loop preview
+            const int w=chordHistWrite.load();
+            chordHist[(size_t)(w&15)].store(packed);
+            chordHistWrite.store(w+1); chordHistCount.store(std::min(16,w+1));
+            lastHistChord=packed;
+        }
     } else {
         transcribedChordRoot.store(-1);transcribedChordQuality.store(-1);
         transcribedChordBass.store(-1);transcribedChordEvidence.store(0.0f);
@@ -1142,8 +1337,43 @@ void TonicRecreationAudioProcessor::playKeyPreview(int root,int mode){
     previewRoot.store(root,std::memory_order_relaxed);previewMode.store(mode,std::memory_order_relaxed);
     previewRequest.store(true,std::memory_order_release);
 }
+void TonicRecreationAudioProcessor::playChordLoop(){
+    // Message thread: recover the repeating progression from the recent chord changes.
+    const int total=chordHistWrite.load(), have=std::min(16,total);
+    if(have<2){ const int r=detectedRoot.load(),m=detectedMode.load(); playKeyPreview(r,m<0?0:(m>1?0:m)); return; }
+    std::array<int,16> seq{};
+    for(int i=0;i<have;++i) seq[(size_t)i]=chordHist[(size_t)((total-have+i)&15)].load();
+    int period=0;
+    for(int p=2;p<=4 && !period;++p){
+        if(have<2*p) continue;
+        bool ok=true; for(int i=0;i<p;++i) if(seq[(size_t)(have-1-i)]!=seq[(size_t)(have-1-i-p)]) ok=false;
+        if(ok) period=p;
+    }
+    if(!period) period=std::min(4,have);
+    for(int i=0;i<period;++i) loopPlan[(size_t)i].store(seq[(size_t)(have-period+i)]);
+    loopPlanCount.store(period);
+    chordLoopRequest.store(true,std::memory_order_release);
+}
 void TonicRecreationAudioProcessor::renderPreview(juce::AudioBuffer<float>& buffer){
     const int n=buffer.getNumSamples(),chs=buffer.getNumChannels();
+    if(chordLoopRequest.exchange(false,std::memory_order_acq_rel)){
+        static const int iv[8][4]={{0,4,7,-1},{0,3,7,-1},{0,3,6,-1},{0,4,8,-1},{0,4,7,10},{0,4,7,11},{0,3,7,10},{0,3,6,10}};
+        const int count=juce::jlimit(1,6,loopPlanCount.load());
+        const float bpm=std::max(60.0f,std::min(200.0f,detectedBpm.load()>0.0f?detectedBpm.load():100.0f));
+        const double chordSec=juce::jlimit(0.8,2.0,4.0*60.0/(double)bpm);
+        const int passes=count<=3?2:1;
+        for(auto& v:voices)v.active=false;
+        int vi=0;
+        for(int pass=0;pass<passes;++pass) for(int ci=0;ci<count;++ci){
+            const int packed=loopPlan[(size_t)ci].load(), root=(packed>>3)%12, q=packed&7;
+            const juce::int64 start=(juce::int64)(currentSampleRate*chordSec*(pass*count+ci));
+            const juce::int64 len=(juce::int64)(currentSampleRate*chordSec*0.97);
+            if(vi<64) voices[(size_t)vi++]={true,36+root,0.0,start,len};   // bass root
+            for(int k=0;k<4;++k) if(iv[q][k]>=0 && vi<64) voices[(size_t)vi++]={true,55+((root+iv[q][k]-7+120)%12),0.0,start,len};
+        }
+        previewClock=0; previewTotal=(juce::int64)(currentSampleRate*chordSec*(passes*count)+currentSampleRate*0.1);
+        previewRunning=true;
+    }
     if(previewRequest.exchange(false,std::memory_order_acq_rel)){
         const int root=previewRoot.load(),mode=previewMode.load();
         static const int major[8]={0,2,4,5,7,9,11,12}, minor[8]={0,2,3,5,7,8,10,12};
@@ -1182,7 +1412,7 @@ void TonicRecreationAudioProcessor::renderPreview(juce::AudioBuffer<float>& buff
                 s+=std::sin((float)(2.0*pi*f*h*(double)t/currentSampleRate))*std::exp(-age*(2.0f+1.6f*(float)h))/(float)h;
             (void)ph;
             const float atk=std::min(1.0f,age*400.0f), rel=std::min(1.0f,(float)(v.length-t)/(float)(currentSampleRate*0.04));
-            mix+=s*atk*rel*0.16f;
+            mix+=s*atk*rel*0.12f;
             if(v.start<=now && now-v.start<(juce::int64)(currentSampleRate*0.2)) shown=v.midi;
         }
         for(int ch=0;ch<chs;++ch)buffer.getWritePointer(ch)[i]+=mix;
@@ -1192,35 +1422,6 @@ void TonicRecreationAudioProcessor::renderPreview(juce::AudioBuffer<float>& buff
     if(previewClock>=previewTotal){previewRunning=false;for(auto& v:voices)v.active=false;previewNote.store(-1,std::memory_order_relaxed);}
 }
 juce::AudioProcessorEditor* TonicRecreationAudioProcessor::createEditor(){return new TonicRecreationAudioProcessorEditor(*this);}
-void TonicRecreationAudioProcessor::timerCallback() {
-    if (!worldLink.online()) return;
-    const int root=getDetectedRoot(),mode=getDetectedMode();
-    const float evidence=getConfidence();
-    // Only share stable, confident major/minor detections, never the audio.
-    if(root<0 || root>=12 || (mode!=0 && mode!=1) ||
-       !std::isfinite(evidence) || evidence<0.55f) {
-        worldCandidate_=0;worldStable_=0;worldLastSent_=0;return;
-    }
-    const int code=1+root+12*mode;
-    if(worldCandidate_!=code) {worldCandidate_=code;worldStable_=1;return;}
-    if(worldStable_<4) ++worldStable_;
-    if(worldStable_<4)return;
-    // A periodic refresh lets a SkellyTune instance join after detection.
-    if(worldLastSent_!=code || ++worldRefresh_>=10) {
-        if(worldLink.publishMusicalKey({root,mode})) {
-            worldLastSent_=code;worldRefresh_=0;
-        }
-    }
-}
 void TonicRecreationAudioProcessor::getStateInformation(juce::MemoryBlock& dest){auto xml=state.copyState().createXml();copyXmlToBinary(*xml,dest);}
-void TonicRecreationAudioProcessor::setStateInformation(const void* data,int size){
-    if(auto xml=getXmlFromBinary(data,size);xml&&xml->hasTagName(state.state.getType())) {
-        auto restored=juce::ValueTree::fromXml(*xml);
-        if(!restored.isValid())return;
-        // UI property only; neither MIDI nor processor params are changed.
-        const auto raw=static_cast<int>(restored.getProperty("skellSkullSkin",0));
-        skinIndex_.store(juce::jlimit(0,3,raw),std::memory_order_release);
-        state.replaceState(restored);
-    }
-}
+void TonicRecreationAudioProcessor::setStateInformation(const void* data,int size){if(auto xml=getXmlFromBinary(data,size);xml&&xml->hasTagName(state.state.getType()))state.replaceState(juce::ValueTree::fromXml(*xml));}
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter(){return new TonicRecreationAudioProcessor();}

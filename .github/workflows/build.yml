@@ -1,30 +1,35 @@
-name: BuildVST3
+name: Build Skell Key Windows VST3
 on:
-  workflow_dispatch:
-  pull_request:
   push:
     branches: [main]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
+
 jobs:
   windows-vst3:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -A x64
-      - name: Build
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (JUCE fetched automatically)
+        run: cmake -S . -B build -A x64 -DSKELL_KEY_BUILD_SYNC_TESTS=ON
+
+      - name: Build Release VST3
         run: cmake --build build --config Release --parallel 2
+
+      - name: Run tuning sync tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - name: Package VST3
         shell: pwsh
         run: |
           $plugin = Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' | Select-Object -First 1
           if (-not $plugin) { throw 'No VST3 bundle was produced' }
-          Compress-Archive -Path $plugin.FullName -DestinationPath TONIC-inspired-Windows-VST3.zip
-      - uses: actions/upload-artifact@v4
+          Compress-Archive -Path $plugin.FullName -DestinationPath Skell-Key-Windows-VST3.zip
+
+      - name: Upload VST3 artifact
+        uses: actions/upload-artifact@v4
         with:
-          retention-days: 1
-          name: TONIC-inspired-Windows-VST3
-          path: TONIC-inspired-Windows-VST3.zip
+          name: Skell-Key-Windows-VST3
+          path: Skell-Key-Windows-VST3.zip
           if-no-files-found: error

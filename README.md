@@ -1,4 +1,4 @@
-# Skell Key V55 — Lean GitHub VST3 source
+# Skell Key V56 — SkellCore/SkellWorld Tuning Sync
 
 This is the **minimal build package** from V54. V55 builds on V54 with a more accurate key/tuning/tempo analysis and a redesigned skeleton-key UI. Key, chord, BPM and Reference A detection and priority drag-and-drop analysis are all retained.
 
@@ -65,11 +65,49 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 - Window default 495 x 405 (10 % smaller).
 - Key (file mode): the opening/closing tonic-triad evidence is weighted 2.5x higher. Real-composition key accuracy 108 -> 118 / 150, synthetic 224 -> 225 / 288. Higher weights score better on pieces but flip the malta beat to minor, so 1.0 is the compromise.
 - Tempo: the final period is refined to ~0.1 % so a 156 BPM loop reads 156.07, and trimmed cuts of the malta beat now all read 149.9-150.1.
+- Tempo hint: when a credible octave alternative exists (x2 or /2), that button pulses a green outline. Click it to apply.
+- Skeleton: nods on every beat at the detected tempo; right-click the scene to cycle costumes (none, headphones, top hat, shades).
+- Tempo hint made stricter (alternative must be nearly as strong as the chosen tempo and seen ~20 analysis steps in a row) and is dismissed for good once you click /2 or x2 (until Reset, Live Input or a new file). Buttons no longer show a focus ring after a click.
+- Tried and not shipped: an out-of-scale / leading-tone penalty for the key. It lifts real-piece accuracy 118 -> ~127/150 but flips the malta beat B major -> F# minor.
+- Chord-loop playback: clicking the skeleton plays the track's recent chord progression (loop of 2-4 distinct chords, with 7ths, at the detected tempo). Falls back to the scale + tonic chord when fewer than two chords have been heard. Shift-click always plays the scale.
+- Melody view: the most salient mid-register note per frame is tracked; dots on the piano keys show how often each pitch class led, the current note is lit, and the header lists the top three (e.g. "MELODY A E F#").
+- Tried and not shipped: using the melody's most frequent note as extra key evidence. It would read the maajins track as A major but lowers real-piece key accuracy 118 -> 111/150.
+- Confidence gate: nothing is shown until it is sure. Files show "Analyzing..." and reveal key, tempo, tuning and melody only once the whole file is done. Live input shows a key after it has stayed the same for 4 s, tempo and tuning after 3 s of steady readings.
+- Default window 455 x 373 (8 % smaller than the previous 495 x 405).
+- UI pass: larger secondary text, a "?" button (header) that lists every click action, brighter "click to play" hint, animated "..." instead of "--" while a file is analysed.
+- Saved result: the last confirmed key, tempo and tuning are stored in the plugin state, so reopening a DAW project shows them straight away ("Saved result - play audio to refresh") until fresh audio gives a new confirmed result. Reset clears it.
+- Skins: clicking the skull key (top-left) cycles Bone (the main look, default), Neon, Graveyard and Clean (light). The choice is saved with the project.
+- Playable piano: click or drag the on-screen keys, play with the computer keyboard (A S D F G H J K = white keys, W E T Y U O L P = black keys) or a MIDI controller (the plugin now has a MIDI input). The played notes are added to the output after analysis, so they never disturb detection. "Lock" snaps every note to the detected scale.
+- TAG (hidden for now; the code is still in PluginEditor.cpp): add the key and tempo to file names, e.g. loop.wav -> loop_Dmaj_156.wav. One file (with a confirmation), or every audio file in a folder (the plugin analyses them one by one, then asks before renaming). An older key/tempo stamp is replaced, name clashes are skipped, and "Undo last tagging" restores the old names.
+- Layout pass: the footer is file name + Open Audio + Live Input. The top row of the piano scene now shows only the melody notes and the Lock button; the click hint appears only while hovering the scene.
 
-## Shared SkellCore skull themes + SkellWorld key link
+- Robustness pass: NaN/inf samples are zeroed before analysis; a file that fails to decode now clears the previous file's key/tempo instead of leaving them on screen.
+- Key: parallel-mode tie-break for bass-driven material (major vs same-root minor when the third is ambiguous). Scored on 67 GiantSteps+ EDM excerpts: 41 -> 49 exact; older real-composition and synthetic sets unchanged.
 
-The header skull-key mark now uses the original SkellKey drawing shared via `SkellCore/SkullTheme.h`. Clicking the **small skull key in the header** cycles four per-instance skins: Ossuary (the original SkellKey colors), Neon, Ivory and Obsidian. The **large central skeleton** still plays the detected musical key—its original behavior is unchanged. Skin selections are UI-only and saved in a non-automatable state property.
 
-Click **JOIN WORLD** in the footer to send stable, confident major/minor detections to the local SkellWorld hub (`127.0.0.1:48673`), then enable **FOLLOW SKELLKEY** under **MORE** in SkellyTune. Key detection uses a dedicated message-thread timer while joined, never the audio callback. The old **Send scale MIDI** button still emits MIDI notes; that is a separate feature from direct SkellWorld linking.
+## V56 SkellCore inter-plugin key, scale & A4 sync
 
-Connections are **off by default**. The two plugins work normally without the hub, and no audio or preset data is sent. The direct link supplies a suggestion for a temporary tuning mask; SkellyTune's saved key/scale, custom notes, DSP latency and automation IDs are unchanged. Connecting to a local hub does not authenticate it; do not use v1 events for arbitrary remote commands.
+Skell Key's **Send to SKELL** toggle broadcasts the currently detected root, major/natural-minor
+mode, the absolute 12-pitch-class scale mask, and A4 reference (400–480 Hz) to other SKELL
+plugins using SkellCore's local WorldLink. A4=440 Hz is used when no reliable tuning measurement
+is available. The sender only publishes a stable live key (at least four seconds of agreement)
+or a completed file result; it does not broadcast a mid-file partial guess. The snapshot is
+published atomically via the versioned `musical.tuning` topic and a legacy `musical.key` event.
+
+**Use:** Launch the optional local SkellWorld Hub first (localhost TCP port 48673), then load
+Skell Key, let it detect a key, and enable **Send to SKELL**. In SkellyTune's Advanced Tuning
+panel, select **JOIN WORLD**, then **FOLLOW SKELLKEY**; custom note masks should be reset before
+following. In OmniChoir, select **FOLLOW KEY** in the header. The receiver must opt in; remote
+values do not overwrite saved plugin states or the host's parameter automation. WorldLink uses
+its own worker; no network I/O runs on the audio thread. The existing optional MIDI scale
+output remains as a DAW-routed fallback for older or unrelated plugins.
+
+For future autotune/choir plugins, link the pinned `SkellCore::UI` CMake target, create
+`skellcore::world::WorldLink` on a non-audio-owned processor and, after user opt-in,
+read `latestMusicalTuning(skellcore::world::MusicalTuning&, uint32_t&)` on a JUCE timer. Copy
+snapshot values into lock-free state for the DSP callback. Only accept a valid trusted `skell.key`
+peer. The `musical.key` legacy topic carries root/mode only; the `musical.tuning` message also
+carries an absolute pitch-class mask and A4 as integer millihertz.
+
+**Offline validation:** Set `SKELL_KEY_BUILD_SYNC_TESTS=ON` when configuring and run CTest.
+Builds pin SkellCore to immutable commit `568a17fd1956065f06d20813f5e57c3621c1cac9`.

@@ -1,5 +1,7 @@
+#include <algorithm>
+#include <functional>
+#include <regex>
 #include "PluginEditor.h"
-#include <SkellCore/SkullTheme.h>
 #include <array>
 #include <cmath>
 
@@ -10,7 +12,40 @@
 //  vertebrae that rises and falls with the music.
 // ---------------------------------------------------------------------------
 namespace {
-// Per-instance palette is supplied by SkellCore/SkullTheme.h.
+// Colours are theme variables. Each editor applies its own theme before it paints
+// (applyTheme is cheap and does nothing when the theme is already current).
+juce::Colour kBg, kPanel, kPanelHi, kLine, kBone, kBoneDim, kBoneFaint, kAccent,
+             kKeyWhiteDia, kKeyWhiteOther, kKeyBlackDia, kKeyBlackOther, kKeyInk, kOnAccent, kBtnHover, kBtnDown, kWarn;
+struct ThemeDef { const char* name; unsigned bg, panel, panelHi, line, bone, boneDim, boneFaint, accent,
+                  whiteDia, whiteOther, blackDia, blackOther, keyInk, onAccent, btnHover, btnDown; };
+const ThemeDef themes[] = {
+    // 0: Bone - the original look (main theme)
+    {"Bone",      0xff0b0a09, 0xff131210, 0xff1b1915, 0xff2f2b23, 0xffe9e1cc, 0xff9b937d, 0xff4d483c, 0xffb6f56a,
+                  0xffd9d2bd, 0xff8c8573, 0xff4b473b, 0xff211f19, 0xff3a362b, 0xff0b0c08, 0xff26231c, 0xff3a4a22},
+    // 1: Neon - indigo night with a cyan accent
+    {"Neon",      0xff07060f, 0xff0f0c1c, 0xff191330, 0xff33285c, 0xffeae6ff, 0xff9d95c9, 0xff463e75, 0xff2ff3e0,
+                  0xffd6d0ff, 0xff7f78ad, 0xff4a3f88, 0xff1c1636, 0xff2a2252, 0xff04130f, 0xff241b45, 0xff0f5a55},
+    // 2: Graveyard - moss and mist with a pumpkin accent
+    {"Graveyard", 0xff0a0d0b, 0xff111611, 0xff1a211a, 0xff2c382c, 0xffd7dccb, 0xff8e9a86, 0xff424b3f, 0xffff9a3c,
+                  0xffc9d0bc, 0xff7b8473, 0xff3f4a3d, 0xff1c231b, 0xff2f372c, 0xff160c02, 0xff222b22, 0xff6b3f12},
+    // 3: Clean - light paper and ink
+    {"Clean",     0xfff3f0e8, 0xffeae6da, 0xffdcd7c8, 0xffc2bba8, 0xff1f1d18, 0xff6a6556, 0xffb9b2a0, 0xff3a8a1e,
+                  0xfffdfbf4, 0xffcfc9b8, 0xff5b574a, 0xff2a2822, 0xff4a4639, 0xfff7f5ee, 0xffe0dbcb, 0xffb9d6a6},
+};
+constexpr int numThemes = (int) (sizeof(themes) / sizeof(themes[0]));
+int appliedTheme = -1;
+void applyTheme(int index) {
+    index = juce::jlimit(0, numThemes - 1, index);
+    if (index == appliedTheme) return;
+    appliedTheme = index;
+    const auto& t = themes[index];
+    kBg = juce::Colour(t.bg); kPanel = juce::Colour(t.panel); kPanelHi = juce::Colour(t.panelHi); kLine = juce::Colour(t.line);
+    kBone = juce::Colour(t.bone); kBoneDim = juce::Colour(t.boneDim); kBoneFaint = juce::Colour(t.boneFaint); kAccent = juce::Colour(t.accent);
+    kKeyWhiteDia = juce::Colour(t.whiteDia); kKeyWhiteOther = juce::Colour(t.whiteOther);
+    kKeyBlackDia = juce::Colour(t.blackDia); kKeyBlackOther = juce::Colour(t.blackOther);
+    kKeyInk = juce::Colour(t.keyInk); kOnAccent = juce::Colour(t.onAccent); kBtnHover = juce::Colour(t.btnHover); kBtnDown = juce::Colour(t.btnDown);
+    kWarn = juce::Colour(0xffe58a6b);
+}
 
 const char* const sharpNames[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 const char* const flatNames [12] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
@@ -38,8 +73,7 @@ bool isAudioFile(const juce::String& path) {
 }
 
 // A card with corner "bone brackets" instead of a full, heavy frame.
-void drawCard(juce::Graphics& g, juce::Rectangle<float> r, const skellcore::ui::SkullPalette& palette) {
-    const auto kPanel=palette.panel, kLine=palette.line, kBoneDim=palette.boneDim;
+void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
     g.setColour(kPanel);  g.fillRect(r);
     g.setColour(kLine);   g.drawRect(r, 1.0f);
     const float L = 9.0f;
@@ -53,9 +87,27 @@ void drawCard(juce::Graphics& g, juce::Rectangle<float> r, const skellcore::ui::
     g.strokePath(p, juce::PathStrokeType(1.4f));
 }
 
+// Skull-bowed skeleton key, about 74 x 30 units.
+void drawKeyMark(juce::Graphics& g, float x, float y, juce::Colour bone, juce::Colour hole) {
+    g.setColour(bone);
+    g.fillEllipse(x + 1.0f, y + 0.0f, 25.0f, 23.0f);                     // cranium
+    g.fillRoundedRectangle(x + 6.5f, y + 17.0f, 14.0f, 11.0f, 3.0f);     // jaw
+    g.fillRoundedRectangle(x + 25.0f, y + 10.5f, 48.0f, 4.2f, 1.6f);     // shaft
+    g.fillRoundedRectangle(x + 33.0f, y + 7.0f, 3.2f, 11.5f, 1.2f);      // collar
+    g.fillRect(x + 56.0f, y + 14.0f, 4.2f, 9.0f);                        // bit teeth
+    g.fillRect(x + 63.0f, y + 14.0f, 4.2f, 6.0f);
+    g.fillRect(x + 69.5f, y + 14.0f, 3.5f, 10.0f);
+    g.setColour(hole);
+    g.fillEllipse(x + 6.2f, y + 8.4f, 6.4f, 6.8f);                       // eye sockets
+    g.fillEllipse(x + 14.6f, y + 8.4f, 6.4f, 6.8f);
+    juce::Path nose; nose.addTriangle(x + 13.5f, y + 15.0f, x + 11.6f, y + 19.0f, x + 15.4f, y + 19.0f);
+    g.fillPath(nose);
+    for (int i = 0; i < 3; ++i)                                           // teeth gaps
+        g.fillRect(x + 9.6f + 3.4f * (float) i, y + 22.0f, 1.0f, 5.0f);
+}
+
 // Row of key-bit teeth used as a meter. Filled teeth show the value.
-void drawTeeth(juce::Graphics& g, juce::Rectangle<float> r, float value, const skellcore::ui::SkullPalette& palette, int count = 10) {
-    const auto kAccent=palette.accent,kBoneFaint=palette.boneFaint;
+void drawTeeth(juce::Graphics& g, juce::Rectangle<float> r, float value, int count = 10) {
     static const float heights[10] = {0.55f, 0.85f, 0.65f, 1.0f, 0.5f, 0.9f, 0.7f, 1.0f, 0.6f, 0.8f};
     const float slot = r.getWidth() / (float) count, w = slot * 0.62f;
     const int lit = juce::jlimit(0, count, juce::roundToInt(value * (float) count));
@@ -80,32 +132,62 @@ class SceneHitButton final : public juce::Button {
 public:
     SceneHitButton() : juce::Button("Play detected key") { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
     void paintButton(juce::Graphics&, bool, bool) override {}
+    void mouseEnter(const juce::MouseEvent& ev) override { juce::Button::mouseEnter(ev); if (onEnter) onEnter(); }
+    void mouseDown(const juce::MouseEvent& ev) override {
+        if (ev.mods.isPopupMenu()) { if (onRightClick) onRightClick(); return; }   // right-click: next costume
+        if (midiAt) {                                                              // a piano key: play it while held
+            const int n = midiAt(ev.getPosition());
+            if (n >= 0) { heldNote = n; if (noteCb) noteCb(n, true); return; }
+        }
+        juce::Button::mouseDown(ev);
+    }
+    void mouseDrag(const juce::MouseEvent& ev) override {
+        if (heldNote >= 0) {
+            const int n = midiAt ? midiAt(ev.getPosition()) : -1;
+            if (n >= 0 && n != heldNote) { if (noteCb) { noteCb(heldNote, false); noteCb(n, true); } heldNote = n; }
+            return;
+        }
+        juce::Button::mouseDrag(ev);
+    }
+    void mouseUp(const juce::MouseEvent& ev) override {
+        if (heldNote >= 0) { if (noteCb) noteCb(heldNote, false); heldNote = -1; return; }
+        juce::Button::mouseUp(ev);
+    }
+    std::function<void()> onRightClick, onEnter;
+    std::function<int(juce::Point<int>)> midiAt;     // MIDI note under a point, or -1 when not on a key
+    std::function<void(int, bool)> noteCb;
+    int heldNote = -1;
 };
 
 // Flat, squared bone buttons.
 class SkellLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
-    explicit SkellLookAndFeel(skellcore::ui::SkullPalette theme) { setPalette(theme); }
-    void setPalette(skellcore::ui::SkullPalette theme) {
-        palette_=theme;
-        setColour(juce::TextButton::buttonColourId, palette_.panelHi);
-        setColour(juce::TextButton::textColourOffId, palette_.bone);
-        setColour(juce::TextButton::textColourOnId, palette_.bone);
-    }
+    const int* themeIndex = nullptr;   // the owning editor's theme
+    void sync() const { if (themeIndex != nullptr) applyTheme(*themeIndex); }
     void drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
                               bool highlighted, bool down) override {
-        const auto kPanelHi=palette_.panelHi,kAccent=palette_.accent;
-        const auto kBoneDim=palette_.boneDim,kLine=palette_.line;
+        sync();
+        if (button.getComponentID() == "keymark") {                // the skull key logo is the look switcher
+            if (highlighted || down) {
+                g.setColour(kAccent.withAlpha(down ? 0.28f : 0.16f));
+                g.fillRoundedRectangle(button.getLocalBounds().toFloat().reduced(1.0f), 5.0f);
+            }
+            return;
+        }
         auto r = button.getLocalBounds().toFloat().reduced(0.5f);
         auto fill = kPanelHi;
-        if (down) fill = palette_.panelHi.interpolatedWith(palette_.accent,.26f);
-        else if (highlighted) fill = palette_.panelHi.interpolatedWith(palette_.accent,.12f);
+        if (down) fill = kBtnDown;
+        else if (highlighted) fill = kBtnHover;
         const bool mini = button.getComponentID() == "mini";
         if (mini && button.getToggleState()) fill = kAccent;
         g.setColour(fill); g.fillRect(r);
         const bool focus = button.hasKeyboardFocus(true);
         g.setColour(focus ? kAccent : (highlighted ? kBoneDim : kLine));
         g.drawRect(r, 1.0f);
+        if (mini && !button.getToggleState() && (bool) button.getProperties()["hint"]) {   // credible tempo alternative: pulse an outline
+            const float pulse = 0.5f + 0.5f * std::sin((float) juce::Time::getMillisecondCounterHiRes() * 0.006f);
+            g.setColour(kAccent.withAlpha(0.35f + 0.65f * pulse)); g.drawRect(r, 1.5f);
+        }
         if (mini && button.getToggleState()) { g.setColour(kAccent); g.drawRect(r, 1.0f); }
         else if (button.getToggleState()) {
             g.setColour(kAccent);
@@ -116,24 +198,22 @@ public:
         return makeFont(juce::jmin(12.5f, (float) buttonHeight * 0.46f), true, 0.06f);
     }
     void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) override {
-        const auto kBone=palette_.bone,kBoneDim=palette_.boneDim,kAccent=palette_.accent;
+        sync();
+        if (button.getComponentID() == "keymark") return;
         g.setColour(button.isEnabled() ? kBone : kBoneDim);
         const bool mini = button.getComponentID() == "mini";
         g.setFont(mini ? makeFont((float) button.getHeight() * 0.64f, true, 0.02f) : getTextButtonFont(button, button.getHeight()));
-        if (mini && button.getToggleState()) g.setColour(juce::Colour(0xff0b0c08));
+        if (mini && button.getToggleState()) g.setColour(kOnAccent);
         else if (mini && button.isMouseOver()) g.setColour(kAccent);
         g.drawFittedText(mini ? button.getButtonText() : button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
                          juce::Justification::centred, 1, 0.85f);
     }
-private:
-    skellcore::ui::SkullPalette palette_;
 };
 
 TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRecreationAudioProcessor& p)
-  : AudioProcessorEditor(&p), processor(p), palette_(skellcore::ui::skullPalette(p.getSkullSkin())),
-    lastSkin_(p.getSkullSkin()) {
+  : AudioProcessorEditor(&p), processor(p) {
     setTitle("Skell Key");
-    // The design space is 600 x 380; the default window is 85 % of that.
+    // Design space 550 x 450; the default window is 92 % of the previous 495 x 405 default.
     setSize(defaultWidth, defaultHeight);
     setResizable(true, true);
     setResizeLimits(defaultWidth * 4 / 5, defaultHeight * 4 / 5, defaultWidth * 2, defaultHeight * 2);
@@ -141,64 +221,85 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
     handL = sceneArea.getCentreX() - 28.0f; handR = sceneArea.getCentreX() + 28.0f;
     scene = std::make_unique<SceneHitButton>();
-    scene->setTooltip("Click the skeleton to hear the detected key");
+    scene->setTooltip("Click: hear the chord loop of the track. Shift-click: hear the key as a scale. Right-click: change costume.");
     scene->onClick = [this] {
-        if (view.root >= 0) processor.playKeyPreview(view.root, view.mode);
+        if (view.root < 0) return;
+        if (juce::ModifierKeys::currentModifiers.isShiftDown()) processor.playKeyPreview(view.root, view.mode);   // shift: scale + tonic chord
+        else processor.playChordLoop();                                                                           // click: the track's chord loop
     };
     scene->onStateChange = [this] { repaint(); };
+    scene->onRightClick = [this] { costume = (costume + 1) % 4; repaint(); };
+    scene->onEnter = [this] { if (!hasKeyboardFocus(false)) grabKeyboardFocus(); };   // so the computer keyboard can play
+    scene->midiAt = [this](juce::Point<int> p) { return pitchAt(p); };
+    scene->noteCb = [this](int midi, bool on) { processor.liveNote(midi, on); };
+    setWantsKeyboardFocus(true);
     addAndMakeVisible(*scene);
-    skullThemeClick=std::make_unique<SceneHitButton>();
-    skullThemeClick->setTooltip("Click skull key to cycle SKELL skins");
-    skullThemeClick->onClick=[this] {
-        processor.setSkullSkin(skellcore::ui::nextSkin(processor.getSkullSkin()));
-        timerCallback();
-    };
-    skullThemeClick->onStateChange=[this]{repaint();};
-    addAndMakeVisible(*skullThemeClick);
     resized();
 
-    look = std::make_unique<SkellLookAndFeel>(palette_);
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) {
+    theme = processor.getTheme(); applyTheme(theme);
+    look = std::make_unique<SkellLookAndFeel>();
+    look->themeIndex = &theme;
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) {
         b->setLookAndFeel(look.get());
         addAndMakeVisible(b);
     }
-    worldButton_.setTooltip("Join the local SkellWorld hub and share a stable detected major/minor key. No audio or remote control is sent.");
-    worldButton_.setLookAndFeel(look.get());
-    addAndMakeVisible(worldButton_);
-    worldButton_.onClick=[this] {
-        if(processor.worldLink.requested()) processor.leaveWorld();
-        else processor.joinWorld();
-        timerCallback();
+    halfButton.setComponentID("mini"); helpButton.setComponentID("mini");
+    helpButton.setWantsKeyboardFocus(false);
+    skinButton.setComponentID("keymark"); skinButton.setWantsKeyboardFocus(false);
+    lockButton.setComponentID("mini"); lockButton.setWantsKeyboardFocus(false); lockButton.setClickingTogglesState(true);
+    lockButton.setTooltip("Scale lock: snap the notes you play to the detected scale");
+    lockButton.onClick = [this] { processor.setScaleLock(lockButton.getToggleState()); };
+    tagButton.setWantsKeyboardFocus(false);
+    tagButton.setTooltip("Add the key and tempo to file names (one file or a whole folder)");
+    tagButton.onClick = [this] { showTagMenu(); };
+    skinButton.setTooltip("Click the key to change the look  (now: " + juce::String(themes[theme].name) + ")");
+    skinButton.onClick = [this] {
+        theme = (theme + 1) % numThemes; processor.setTheme(theme); applyTheme(theme);
+        skinButton.setButtonText(themes[theme].name);
+        skinButton.setTooltip("Click the key to change the look  (now: " + juce::String(themes[theme].name) + ")");
+        for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->repaint();
+        repaint();
     };
-    halfButton.setComponentID("mini"); doubleButton.setComponentID("mini");
+    skinButton.setButtonText(themes[theme].name);
+    helpButton.setTooltip("What can I click?");
+    helpButton.onClick = [this] { showHelp(true); }; doubleButton.setComponentID("mini");
     halfButton.setTooltip("Tempo is double what it should be: halve it");
     doubleButton.setTooltip("Tempo is half what it should be: double it");
     halfButton.setClickingTogglesState(true); doubleButton.setClickingTogglesState(true);
+    halfButton.setWantsKeyboardFocus(false); doubleButton.setWantsKeyboardFocus(false);   // no focus ring after a click
     halfButton.onClick = [this] {       // on/off; turning one on turns the other off
+        hintDismissed = true;
         if (halfButton.getToggleState()) doubleButton.setToggleState(false, juce::dontSendNotification);
         bpmFactor = halfButton.getToggleState() ? 0.5f : 1.0f; timerCallback(); };
     doubleButton.onClick = [this] {
+        hintDismissed = true;
         if (doubleButton.getToggleState()) halfButton.setToggleState(false, juce::dontSendNotification);
         bpmFactor = doubleButton.getToggleState() ? 2.0f : 1.0f; timerCallback(); };
-    pauseButton.setButtonText("Send scale MIDI");
+    pauseButton.setButtonText("Send to SKELL");
     pauseButton.setClickingTogglesState(true);
     pauseButton.setEnabled(false);
-    pauseButton.setTooltip("Send scale as MIDI notes and copy the key. To connect directly to SkellyTune, click JOIN WORLD here and enable FOLLOW SKELLKEY in Tune's MORE panel.");
+    pauseButton.setTooltip("Share key, scale and A4 with SkellTune, OmniChoir and future SKELL plugins via SkellWorld. Also sends scale MIDI for legacy routing. Start the SkellWorld Hub to sync across plugins.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
 
     pauseButton.onClick = [this] {
         const bool on = pauseButton.getToggleState() && view.root >= 0;
-        processor.setScaleOutput(on);
-        if (on) {
+        const bool connected = processor.setWorldSharing(on);
+        processor.setScaleOutput(on); // MIDI fallback remains available
+        if (on && !connected) {
+            pauseButton.setToggleState(false, juce::dontSendNotification);
+            processor.setScaleOutput(false);
+        }
+        if (on && connected) {
             const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
             juce::SystemClipboard::copyTextToClipboard(juce::String((flats ? flatNames : sharpNames)[view.root]) + (view.mode == 0 ? " major" : " minor"));
         }
         timerCallback();
     };
     resetButton.onClick = [this] {
-        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
+        hintDismissed = false; resetGate(); bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
+        processor.clearSavedResult();
         if (processor.isOfflineMode()) processor.returnToLive(); else processor.requestReset();
         timerCallback();
     };
@@ -210,10 +311,11 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
             [safe](const juce::FileChooser& chooser) { if (safe != nullptr) safe->loadFile(chooser.getResult()); });
     };
     liveButton.onClick = [this] {
-        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
+        hintDismissed = false; resetGate(); bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         processor.returnToLive();
         pauseButton.setToggleState(false, juce::dontSendNotification);
         processor.setScaleOutput(false);
+        processor.setWorldSharing(false);
         timerCallback();
     };
     startTimerHz(30);
@@ -222,44 +324,238 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
 TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &worldButton_ }) b->setLookAndFeel(nullptr);
-    skullThemeClick.reset();
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setLookAndFeel(nullptr);
     scene.reset();
     look.reset();
 }
 
-void TonicRecreationAudioProcessorEditor::timerCallback() {
-    const auto requestedSkin=processor.getSkullSkin();
-    if(requestedSkin!=lastSkin_) {
-        lastSkin_=requestedSkin;
-        palette_=skellcore::ui::skullPalette(requestedSkin);
-        if(look)look->setPalette(palette_);
-        repaint();
+void TonicRecreationAudioProcessorEditor::showHelp(bool on) {
+    helpShown = on;
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(!on);
+    if (scene != nullptr) scene->setVisible(!on);
+    repaint();
+}
+void TonicRecreationAudioProcessorEditor::mouseDown(const juce::MouseEvent&) { if (helpShown) showHelp(false); }
+
+// ------------------------------------------------------------------ playable piano
+int TonicRecreationAudioProcessorEditor::pitchAt(juce::Point<int> p) const {
+    const auto& a = sceneArea;
+    const float s = scale();
+    const float x = a.getX() + (float) p.x / s, y = a.getY() + (float) p.y / s;
+    const float kbTop = a.getBottom() - 62.0f, kbH = 58.0f, ww = a.getWidth() / 7.0f, bw = ww * 0.58f, bh = 35.0f;
+    if (y < kbTop || y > kbTop + kbH || x < a.getX() || x > a.getRight()) return -1;
+    static const int whitePc[7] = {0, 2, 4, 5, 7, 9, 11}, blackPc[5] = {1, 3, 6, 8, 10}, blackSlot[5] = {1, 2, 4, 5, 6};
+    if (y < kbTop + bh)
+        for (int i = 0; i < 5; ++i) {
+            const float cx = a.getX() + ww * (float) blackSlot[i];
+            if (x >= cx - bw * 0.5f && x <= cx + bw * 0.5f) return 60 + blackPc[i];
+        }
+    const int idx = juce::jlimit(0, 6, (int) ((x - a.getX()) / ww));
+    return 60 + whitePc[idx];
+}
+
+namespace {
+struct KeyMap { char c; int semis; };
+const KeyMap kKeyMap[] = {{'a',0},{'w',1},{'s',2},{'e',3},{'d',4},{'f',5},{'t',6},{'g',7},{'y',8},{'h',9},{'u',10},{'j',11},
+                          {'k',12},{'o',13},{'l',14},{'p',15},{';',16}};
+constexpr int kNumKeyMap = (int) (sizeof(kKeyMap) / sizeof(kKeyMap[0]));
+bool keyDown(char c) {
+    const auto m = juce::ModifierKeys::currentModifiers;
+    if (m.isCommandDown() || m.isCtrlDown() || m.isAltDown()) return false;      // leave host shortcuts alone
+    return juce::KeyPress::isKeyCurrentlyDown(c) || juce::KeyPress::isKeyCurrentlyDown(std::toupper((unsigned char) c));
+}
+}
+
+bool TonicRecreationAudioProcessorEditor::keyStateChanged(bool) {
+    bool changed = false;
+    for (int i = 0; i < kNumKeyMap; ++i) {
+        const bool down = keyDown(kKeyMap[i].c);
+        if (down != kbHeld[(size_t) i]) { kbHeld[(size_t) i] = down; processor.liveNote(60 + kKeyMap[i].semis, down); changed = true; }
     }
-    const bool worldOnline=processor.worldLink.online();
-    const auto newWorldText=worldOnline ? "WORLD " + juce::String(processor.worldLink.peerCount())
-        : (processor.worldLink.requested() ? juce::String("CONNECTING") : juce::String("JOIN WORLD"));
-    if(worldButton_.getButtonText()!=newWorldText)worldButton_.setButtonText(newWorldText);
+    return changed;
+}
+bool TonicRecreationAudioProcessorEditor::keyPressed(const juce::KeyPress& k) {
+    for (int i = 0; i < kNumKeyMap; ++i) if (k.getTextCharacter() == (juce::juce_wchar) kKeyMap[i].c) return true;   // consume note keys
+    return false;
+}
+void TonicRecreationAudioProcessorEditor::focusLost(FocusChangeType) {
+    for (int i = 0; i < kNumKeyMap; ++i) if (kbHeld[(size_t) i]) { kbHeld[(size_t) i] = false; processor.liveNote(60 + kKeyMap[i].semis, false); }
+}
+
+// ------------------------------------------------------------------ file tagging
+juce::String TonicRecreationAudioProcessorEditor::keyLabel(int root, int mode) const {
+    const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
+    return juce::String((flats ? flatNames : sharpNames)[juce::jlimit(0, 11, root)]) + (mode == 0 ? "maj" : "min");
+}
+juce::File TonicRecreationAudioProcessorEditor::stampedFile(const juce::File& f, int root, int mode, float bpm) const {
+    std::string base = f.getFileNameWithoutExtension().toStdString();
+    base = std::regex_replace(base, std::regex("_[A-G][#b]?(maj|min)(_[0-9]+)?$"), "");   // replace an older stamp
+    juce::String name = juce::String(base) + "_" + keyLabel(root, mode);
+    if (bpm > 0.0f) name += "_" + juce::String(juce::roundToInt(bpm));
+    return f.getSiblingFile(name + f.getFileExtension());
+}
+std::vector<std::pair<juce::File, juce::File>> TonicRecreationAudioProcessorEditor::planRenames(int& noKey, int& blocked) const {
+    std::vector<std::pair<juce::File, juce::File>> plan;
+    noKey = blocked = 0;
+    for (const auto& it : batch) {
+        if (it.root < 0) { ++noKey; continue; }
+        const auto target = stampedFile(it.file, it.root, it.mode, it.bpm);
+        if (target == it.file) continue;                                   // already carries exactly this stamp
+        if (target.exists()) { ++blocked; continue; }
+        plan.emplace_back(it.file, target);
+    }
+    return plan;
+}
+int TonicRecreationAudioProcessorEditor::applyRenames(const std::vector<std::pair<juce::File, juce::File>>& plan) {
+    std::vector<std::pair<juce::File, juce::File>> done;
+    for (const auto& pr : plan)
+        if (pr.first.existsAsFile() && !pr.second.exists() && pr.first.moveFileTo(pr.second)) {
+            done.push_back(pr);
+            if (juce::File(processor.getFilePath()) == pr.first) processor.retargetFile(pr.second);
+        }
+    if (!done.empty()) lastRenames = done;
+    return (int) done.size();
+}
+void TonicRecreationAudioProcessorEditor::undoLastTagging() {
+    int n = 0;
+    for (auto it = lastRenames.rbegin(); it != lastRenames.rend(); ++it)
+        if (it->second.existsAsFile() && !it->first.exists() && it->second.moveFileTo(it->first)) {
+            ++n;
+            if (juce::File(processor.getFilePath()) == it->second) processor.retargetFile(it->first);
+        }
+    lastRenames.clear();
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Undo tagging", juce::String(n) + " file(s) renamed back.");
+}
+void TonicRecreationAudioProcessorEditor::showTagMenu() {
+    const juce::File current(processor.getFilePath());
+    const bool canSingle = processor.isOfflineMode() && !processor.isFileBusy() && view.root >= 0 && current.existsAsFile() && !batchActive;
+    juce::PopupMenu m;
+    m.addItem(1, "Add key + tempo to this file's name", canSingle);
+    m.addItem(2, "Tag every file in a folder...", !batchActive);
+    m.addSeparator();
+    m.addItem(3, "Undo last tagging", !lastRenames.empty());
+    juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&tagButton), [safe](int choice) {
+        if (safe == nullptr) return;
+        if (choice == 1) safe->tagThisFile();
+        else if (choice == 2) safe->startFolderTag();
+        else if (choice == 3) safe->undoLastTagging();
+    });
+}
+void TonicRecreationAudioProcessorEditor::tagThisFile() {
+    const juce::File f(processor.getFilePath());
+    if (!f.existsAsFile() || view.root < 0) return;
+    batch.clear(); batch.push_back({ f, view.root, view.mode, bpmNow });
+    int noKey = 0, blocked = 0;
+    const auto plan = planRenames(noKey, blocked);
+    if (plan.empty()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Nothing to do",
+            blocked > 0 ? "A file with that name already exists." : "This file already has this key and tempo in its name.");
+        return;
+    }
+    juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
+    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "Add key and tempo to the file name?",
+        plan[0].first.getFileName() + "\n   becomes\n" + plan[0].second.getFileName() + "\n\nYou can undo this from the Tag menu.",
+        "Rename", "Cancel", this, juce::ModalCallbackFunction::create([safe, plan](int r) {
+            if (r == 1 && safe != nullptr) safe->applyRenames(plan);
+        }));
+}
+void TonicRecreationAudioProcessorEditor::startFolderTag() {
+    folderChooser = std::make_unique<juce::FileChooser>("Choose a folder of samples to tag", juce::File{}, "");
+    juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
+    folderChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+        [safe](const juce::FileChooser& c) { if (safe != nullptr) safe->beginBatch(c.getResult()); });
+}
+void TonicRecreationAudioProcessorEditor::beginBatch(const juce::File& dir) {
+    if (!dir.isDirectory()) return;
+    auto files = dir.findChildFiles(juce::File::findFiles, false);
+    batch.clear();
+    for (const auto& f : files) if (isAudioFile(f.getFullPathName())) batch.push_back({ f, -1, 2, 0.0f });
+    std::sort(batch.begin(), batch.end(), [](const BatchItem& a, const BatchItem& b) { return a.file.getFileName().compareNatural(b.file.getFileName()) < 0; });
+    if (batch.empty()) { juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "No audio files", "That folder has no wav, aiff, flac, ogg or mp3 files."); return; }
+    batchIndex = -1; batchActive = true; batchWaiting = false;
+}
+void TonicRecreationAudioProcessorEditor::stepBatch() {
+    if (!batchActive) return;
+    if (batchWaiting) {
+        if (!processor.isOfflineMode()) { batchActive = false; return; }               // user left file mode: cancel
+        if (processor.isFileBusy()) return;
+        auto& it = batch[(size_t) batchIndex];
+        if (!processor.fileFailed()) { it.root = processor.getDetectedRoot(); it.mode = processor.getDetectedMode(); it.bpm = processor.getDetectedBpm(); }
+        batchWaiting = false;
+    }
+    while (++batchIndex < (int) batch.size()) {
+        hintDismissed = false; resetGate(); bpmFactor = 1.0f;
+        halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
+        if (processor.requestFileAnalysis(batch[(size_t) batchIndex].file)) { batchWaiting = true; return; }
+    }
+    batchActive = false;
+    finishBatch();
+}
+void TonicRecreationAudioProcessorEditor::finishBatch() {
+    int noKey = 0, blocked = 0;
+    const auto plan = planRenames(noKey, blocked);
+    juce::String msg = "Analysed " + juce::String((int) batch.size()) + " files.\n";
+    if (plan.empty()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Folder tagging",
+            msg + "Nothing to rename" + (noKey ? " (" + juce::String(noKey) + " had no clear key)." : "."));
+        return;
+    }
+    msg += "Add key + tempo to " + juce::String((int) plan.size()) + " file names?\n\n";
+    for (size_t i = 0; i < plan.size() && i < 3; ++i) msg += plan[i].first.getFileName() + "  ->  " + plan[i].second.getFileName() + "\n";
+    if (plan.size() > 3) msg += "...\n";
+    if (noKey || blocked) msg += "\nSkipped: " + juce::String(noKey) + " with no clear key, " + juce::String(blocked) + " name clashes.\n";
+    msg += "\nTempos are the detector's reading (half/double time is possible). You can undo from the Tag menu.";
+    juce::Component::SafePointer<TonicRecreationAudioProcessorEditor> safe(this);
+    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "Tag folder", msg, "Rename", "Cancel", this,
+        juce::ModalCallbackFunction::create([safe, plan](int r) {
+            if (r != 1 || safe == nullptr) return;
+            const int n = safe->applyRenames(plan);
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Folder tagging", juce::String(n) + " file(s) renamed.");
+        }));
+}
+
+void TonicRecreationAudioProcessorEditor::resetGate() {
+    gateRoot = -1; gateMode = 2; gateSince = 0.0; shownRoot = -1; shownMode = 2;
+    shownBpm = 0.0f; bpmCand = 0.0f; bpmSince = 0.0; tuneCand = 0.0f; tuneSince = 0.0;
+}
+
+void TonicRecreationAudioProcessorEditor::timerCallback() {
+    stepBatch();
     const bool offline = processor.isOfflineMode();
     const bool startingFile = offline && processor.isFileBusy() && processor.getFileAnalyzedSeconds() < 0.25f;
     const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
     const char* const* names = flats ? flatNames : sharpNames;
 
-    const int root = startingFile ? -1 : processor.getDetectedRoot(), mode = processor.getDetectedMode();
+    // Confidence gate: live input shows a key/tempo only after it has stayed the same for a few
+    // seconds; a file shows its result only once the whole analysis has finished.
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    const bool fileBusy = offline && processor.isFileBusy();
+    const int rawRoot = startingFile ? -1 : processor.getDetectedRoot(), rawMode = processor.getDetectedMode();
+    if (rawRoot != gateRoot || rawMode != gateMode) { gateRoot = rawRoot; gateMode = rawMode; gateSince = nowMs; }
+    if (fileBusy) { shownRoot = -1; }
+    else if (rawRoot >= 0 && (offline || nowMs - gateSince >= keyHoldMs)) { shownRoot = rawRoot; shownMode = rawMode; }
+    else if (rawRoot < 0 && (offline || nowMs - gateSince >= 2500.0)) { shownRoot = -1; }
+    const bool keyPending = rawRoot >= 0 && shownRoot < 0 && !fileBusy;
+    // A reopened project keeps its last confirmed result until fresh audio produces a new one.
+    const bool fromSaved = !offline && shownRoot < 0 && processor.getSavedRoot() >= 0;
+    const int root = shownRoot >= 0 ? shownRoot : (fromSaved ? processor.getSavedRoot() : -1);
+    const int mode = shownRoot >= 0 ? shownMode : (fromSaved ? processor.getSavedMode() : rawMode);
     view.root = root; view.mode = mode;
     if (root < 0) {
-        view.keyText = startingFile ? "Analyzing..."
+        view.keyText = (startingFile || fileBusy) ? "Analyzing..."
                      : (offline && !processor.isFileBusy() ? "No key found" : "Listening...");
-        view.keyHint = "Waiting for musical input";
+        view.keyHint = keyPending ? "Gathering evidence" : (fileBusy ? "Reading the whole file" : "Waiting for musical input");
         view.keyConfidence = 0.0f;
     } else {
         view.keyText = juce::String(names[root]) + (mode == 0 ? " major" : " minor");
-        view.keyConfidence = juce::jlimit(0.0f, 1.0f, processor.getConfidence());
-        view.keyHint = "Key evidence  " + juce::String(juce::roundToInt(view.keyConfidence * 100.0f)) + "%";
+        view.keyConfidence = fromSaved ? 0.0f : juce::jlimit(0.0f, 1.0f, processor.getConfidence());
+        view.keyHint = fromSaved ? (keyPending ? "Saved result - checking audio" : "Saved result - play audio to refresh")
+                                 : "Key evidence  " + juce::String(juce::roundToInt(view.keyConfidence * 100.0f)) + "%";
     }
     juce::String also;
     int shown = 0;
-    for (int i = 0; i < 3 && shown < 2 && !startingFile && root >= 0; ++i) {
+    for (int i = 0; i < 3 && shown < 2 && !startingFile && root >= 0 && !fromSaved; ++i) {
         const int r = processor.getRankedRoot(i), m = processor.getRankedMode(i);
         if (r < 0 || (r == root && m == mode)) continue;
         if (also.isNotEmpty()) also += "   /   ";
@@ -274,24 +570,45 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
     const int kind = (newRoot >= 0) ? newQuality : processor.getChordKind();
     const int bass = (newRoot >= 0) ? processor.getTranscribedChordBass() : -1;
     view.chordText = "Chord   --";
-    if (cr >= 0 && cr < 12 && kind >= 0 && kind < 8) {
+    if (root >= 0 && !fromSaved && cr >= 0 && cr < 12 && kind >= 0 && kind < 8) {
         view.chordText = "Chord   " + juce::String(names[cr]) + " " + chordKinds[kind];
         if (bass >= 0 && bass < 12 && bass != cr) view.chordText += "/" + juce::String(names[bass]);
     }
 
-    const float bpmValue = startingFile ? 0.0f : juce::jlimit(0.0f, 400.0f, processor.getDetectedBpm() * bpmFactor);
-    view.bpmConfidence = startingFile ? 0.0f : juce::jlimit(0.0f, 1.0f, processor.getBpmConfidence());
-    view.bpmText = bpmValue > 0 ? juce::String(bpmValue, 1) : "--";
-    view.bpmHint = bpmValue > 0 ? "Confidence  " + juce::String(juce::roundToInt(view.bpmConfidence * 100.0f)) + "%"
-                                : "Waiting for rhythm";
+    const float bpmRaw = startingFile ? 0.0f : processor.getDetectedBpm();
+    if (fileBusy) shownBpm = 0.0f;
+    else if (offline) shownBpm = bpmRaw;
+    else if (bpmRaw > 0.0f && shownBpm > 0.0f && std::abs(std::log2(bpmRaw / shownBpm)) < 0.03f) { shownBpm = bpmRaw; bpmSince = nowMs; }
+    else {
+        if (bpmRaw <= 0.0f || bpmCand <= 0.0f || std::abs(std::log2(bpmRaw / bpmCand)) >= 0.03f) { bpmCand = bpmRaw; bpmSince = nowMs; }
+        if (bpmRaw > 0.0f && nowMs - bpmSince >= bpmHoldMs) shownBpm = bpmRaw;
+        else if (bpmRaw <= 0.0f && nowMs - bpmSince >= 2500.0) shownBpm = 0.0f;
+    }
+    const bool bpmPending = bpmRaw > 0.0f && shownBpm <= 0.0f && !fileBusy;
+    const bool bpmFromSaved = !offline && shownBpm <= 0.0f && processor.getSavedBpm() > 0.0f;
+    const float bpmValue = bpmFromSaved ? processor.getSavedBpm() : juce::jlimit(0.0f, 400.0f, shownBpm * bpmFactor);
+    view.bpmConfidence = (startingFile || shownBpm <= 0.0f) ? 0.0f : juce::jlimit(0.0f, 1.0f, processor.getBpmConfidence());
+    view.bpmHave = bpmValue > 0.0f;
+    const int dots = (int) (nowMs / 350.0) % 4;           // animated "working" marker instead of a dead dash
+    const juce::String working = juce::String("...").substring(0, juce::jmax(1, dots));
+    view.bpmText = bpmValue > 0 ? juce::String(bpmValue, 1) : ((fileBusy || bpmPending) ? working : "--");
+    view.bpmHint = bpmFromSaved ? juce::String("Saved result") : bpmValue > 0 ? "Confidence  " + juce::String(juce::roundToInt(view.bpmConfidence * 100.0f)) + "%"
+                                : (bpmPending ? "Gathering evidence" : (fileBusy ? "Analyzing file" : "Waiting for rhythm"));
 
     const float hz = processor.getDetectedTuningHz();
     const float tConf = startingFile ? 0.0f : processor.getTuningConfidence();
-    view.tuningValid = tConf >= 0.03f && std::isfinite(hz) && hz > 0.0f;
-    view.cents = view.tuningValid ? 1200.0f * std::log2(hz / 440.0f) : 0.0f;
-    view.refText = view.tuningValid ? juce::String(hz, 1) : "--";
+    // Tuning: hidden while a file is still being analysed; live, it must hold steady for 3 s first.
+    if (std::abs(hz - tuneCand) > 0.4f) { tuneCand = hz; tuneSince = nowMs; }
+    const bool tuneSure = offline ? !fileBusy : (nowMs - tuneSince >= 3000.0);
+    view.tuningValid = tConf >= 0.03f && std::isfinite(hz) && hz > 0.0f && tuneSure;
+    const bool tuneFromSaved = !offline && !view.tuningValid && processor.getSavedHz() > 0.0f && processor.getSavedTuneConf() >= 0.03f;
+    const float shownHz = tuneFromSaved ? processor.getSavedHz() : hz;
+    if (tuneFromSaved) view.tuningValid = true;
+    resultsHeld = fileBusy;
+    view.cents = view.tuningValid ? 1200.0f * std::log2(shownHz / 440.0f) : 0.0f;
+    view.refText = view.tuningValid ? juce::String(shownHz, 1) : (fileBusy ? working : "--");
     view.refHint = view.tuningValid ? juce::String(view.cents >= 0 ? "+" : "") + juce::String(view.cents, 1) + " cents"
-                                    : "Detecting tuning";
+                                    : (fileBusy ? "Analyzing file" : "Detecting tuning");
 
     juce::String status;
     view.busy = offline && processor.isFileBusy();
@@ -321,11 +638,25 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
     }
     {   // Autotune button: usable only once a key exists; turns itself off if the key is lost.
         const bool haveKey = root >= 0;
-        if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); }
+        if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); processor.setWorldSharing(false); }
         pauseButton.setEnabled(haveKey);
-        pauseButton.setButtonText(pauseButton.getToggleState() ? "Sending MIDI" : "Send scale MIDI");
+        pauseButton.setButtonText(!pauseButton.getToggleState() ? "Send to SKELL"
+            : (processor.isWorldOnline() ? "SKELL sync on" : "Waiting for Hub"));
+    }
+    {   // Octave hint: only while no manual correction is active.
+        const float alt = processor.getAltTempoRatio();
+        const bool have = bpmValue > 0.0f && bpmFactor == 1.0f && !hintDismissed;
+        halfButton.getProperties().set("hint", have && alt == 0.5f);
+        doubleButton.getProperties().set("hint", have && alt == 2.0f);
+    }
+    if (shownRoot >= 0) {   // remember the confirmed result in the plugin state (saved with the project)
+        const bool tuneFresh = view.tuningValid && !tuneFromSaved;
+        processor.saveResult(shownRoot, shownMode, shownBpm > 0.0f ? bpmValue : processor.getSavedBpm(),
+                             tuneFresh ? hz : processor.getSavedHz(), tuneFresh ? tConf : processor.getSavedTuneConf());
     }
     previewPc = processor.getPreviewPitchClass();
+    liveMask = processor.getLiveMask();
+    if (previewPc < 0 && liveMask != 0) previewPc = processor.getLiveLast();
     bpmNow = juce::String(view.bpmText).getFloatValue();
     tonicPulse = juce::jmax(0.0f, tonicPulse - 0.05f);
     if (root != lastRoot) { tonicPulse = 1.0f; lastRoot = root; }
@@ -334,9 +665,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
 
 // --------------------------------------------------------------------------- painting
 void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
+    applyTheme(theme);
     g.fillAll(kBg);
     g.addTransform(juce::AffineTransform::scale(scale()));
     paintHeader(g);
@@ -345,6 +674,31 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
     paintReferenceCard(g);
     paintFooter(g);
 
+    if (helpShown) {
+        const juce::Rectangle<float> all(0.0f, 0.0f, (float) designWidth, (float) designHeight);
+        g.setColour(kBg); g.fillRect(all);
+        drawText(g, "WHAT CAN I CLICK?", { 30.0f, 28.0f, 400.0f, 26.0f }, 18.0f, true, kBone, juce::Justification::centredLeft, 0.14f);
+        const char* const rows[][2] = {
+            {"Skeleton", "hear the track's chord loop"},
+            {"Shift + skeleton", "hear the key as a scale"},
+            {"Right-click skeleton", "change its costume"},
+            {"/2   x2", "fix a half- or double-time tempo (green = applied)"},
+            {"Send to SKELL", "share key + scale + A4 via SkellCore; MIDI fallback"},
+            {"Open Audio / drop a file", "analyse a whole file"},
+            {"Pulsing /2 or x2", "a likely alternative tempo"},
+            {"Dots on the keys", "how often each note led the melody"},
+            {"The key (top-left)", "cycle the look: Bone (main), Neon, Graveyard, Clean"},
+            {"Piano keys", "play them: mouse, keys A-K, or a MIDI keyboard"},
+            {"Lock", "snap what you play to the detected scale"} };
+        float y = 70.0f;
+        for (auto& row : rows) {
+            drawText(g, row[0], { 30.0f, y, 190.0f, 20.0f }, 12.5f, true, kAccent, juce::Justification::centredLeft);
+            drawText(g, row[1], { 226.0f, y, 310.0f, 20.0f }, 12.5f, false, kBone, juce::Justification::centredLeft);
+            y += 26.0f;
+        }
+        drawText(g, "click anywhere to close", { 30.0f, designHeight - 40.0f, 300.0f, 16.0f }, 11.0f, false, kBoneDim, juce::Justification::centredLeft, 0.1f);
+        return;
+    }
     if (dragHover) {
         const juce::Rectangle<float> all(0.0f, 0.0f, (float) designWidth, (float) designHeight);
         g.setColour(kBg.withAlpha(0.93f)); g.fillRect(all);
@@ -355,7 +709,7 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
         const float pattern[] = {9.0f, 6.0f};
         juce::PathStrokeType(2.0f).createDashedStroke(stroked, dashes, pattern, 2);
         g.fillPath(stroked);
-        skellcore::ui::drawSkullKeyMark(g, all.getCentreX() - 37.0f, all.getCentreY() - 70.0f, kBone, kBg);
+        drawKeyMark(g, all.getCentreX() - 37.0f, all.getCentreY() - 70.0f, kBone, kBg);
         drawText(g, "DROP AUDIO TO UNLOCK", all.withTrimmedTop(all.getCentreY() - 28.0f).withHeight(60.0f), 24.0f, true, kBone,
                  juce::Justification::centred, 0.12f);
         drawText(g, "wav  aiff  flac  ogg  mp3", all.withTrimmedTop(all.getCentreY() + 30.0f).withHeight(24.0f), 12.0f, false, kBoneDim,
@@ -364,13 +718,10 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
-    skellcore::ui::drawSkullKeyMark(g, 16.0f, 11.0f, kBone, kBg);
+    drawKeyMark(g, 16.0f, 11.0f, kBone, kBg);
     drawText(g, "SKELL KEY", { 100.0f, 9.0f, 220.0f, 26.0f }, 21.0f, true, kBone,
              juce::Justification::centredLeft, 0.16f);
-    drawText(g, "KEY   /   TEMPO   /   TUNING", { 101.0f, 33.0f, 240.0f, 14.0f }, 9.0f, false, kBoneDim,
+    drawText(g, "KEY   /   TEMPO   /   TUNING", { 101.0f, 33.0f, 240.0f, 14.0f }, 10.0f, false, kBoneDim,
              juce::Justification::centredLeft, 0.18f);
     // Header strip: an input level meter (lit segments) with a tempo playhead that
     // sweeps one bar (4 beats) at the detected BPM.
@@ -398,12 +749,9 @@ void TonicRecreationAudioProcessorEditor::paintHeader(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> card(14.0f, 66.0f, 522.0f, 200.0f);
-    drawCard(g, card, palette_);
-    drawText(g, "DETECTED KEY", { 30.0f, 76.0f, 200.0f, 14.0f }, 9.0f, true, kBoneDim,
+    drawCard(g, card);
+    drawText(g, "DETECTED KEY", { 30.0f, 76.0f, 200.0f, 14.0f }, 10.5f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
 
     // Big key: tonic in bone, mode in dim bone, so the pitch reads first.
@@ -418,10 +766,10 @@ void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
     } else {
         drawText(g, view.keyText, { 28.0f, 100.0f, 230.0f, 56.0f }, 30.0f, true, kBoneDim);
     }
-    drawText(g, view.keyHint, { 30.0f, 172.0f, 200.0f, 14.0f }, 11.0f, false, kBoneDim);
-    drawTeeth(g, { 30.0f, 190.0f, 150.0f, 12.0f }, view.keyConfidence, palette_);
-    drawText(g, view.candidates, { 30.0f, 212.0f, 228.0f, 14.0f }, 11.0f, false, kBoneDim);
-    drawText(g, view.chordText, { 30.0f, 232.0f, 228.0f, 14.0f }, 11.0f, true, kBone);
+    drawText(g, view.keyHint, { 30.0f, 171.0f, 220.0f, 16.0f }, 12.5f, false, kBoneDim);
+    drawTeeth(g, { 30.0f, 190.0f, 150.0f, 12.0f }, view.keyConfidence);
+    drawText(g, view.candidates, { 30.0f, 211.0f, 228.0f, 16.0f }, 12.5f, false, kBoneDim);
+    drawText(g, view.chordText, { 30.0f, 231.0f, 228.0f, 16.0f }, 12.5f, true, kBone);
 
     // Divider between the readout and the spine.
     g.setColour(kLine);
@@ -430,9 +778,6 @@ void TonicRecreationAudioProcessorEditor::paintKeyCard(juce::Graphics& g) {
 }
 
 void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Rectangle<float> area) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     // --- keyboard: one octave, C..B. White keys glow with the live chroma of that
     // pitch class; keys in the detected key are bright, the tonic is accent green.
     const float kbTop = area.getBottom() - 62.0f, kbH = 58.0f;
@@ -486,7 +831,12 @@ void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Re
     const float shY = area.getY() + 36.0f;                // clavicles
     g.drawLine(cx - 27.0f, shY, cx + 27.0f, shY, 2.2f);
     // skull
-    const float skY = area.getY() + 4.0f;
+    float nod = 0.0f;                                     // skull nods on every beat of the detected tempo
+    if (bpmNow > 0.0f) {
+        const double beats = juce::Time::getMillisecondCounterHiRes() * 0.001 * (double) bpmNow / 60.0;
+        nod = 2.4f * std::exp(-5.0f * (float) std::fmod(beats, 1.0));
+    }
+    const float skY = area.getY() + 4.0f + nod;
     g.setColour(bone);
     g.fillEllipse(cx - 13.0f, skY, 26.0f, 24.0f);
     g.fillRoundedRectangle(cx - 8.0f, skY + 19.0f, 16.0f, 9.0f, 2.5f);
@@ -495,6 +845,23 @@ void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Re
     g.fillEllipse(cx + 2.0f, skY + 9.0f, 7.0f, 7.5f);
     { juce::Path nose; nose.addTriangle(cx, skY + 16.5f, cx - 2.2f, skY + 21.0f, cx + 2.2f, skY + 21.0f); g.fillPath(nose); }
     for (int i = 0; i < 4; ++i) g.fillRect(cx - 6.0f + 3.4f * (float) i, skY + 23.5f, 0.9f, 5.0f);
+    const juce::Colour dark(0xff0b0c08);
+    if (costume == 1) {                                   // headphones
+        juce::Path band; band.startNewSubPath(cx - 14.0f, skY + 12.0f); band.quadraticTo(cx, skY - 13.0f, cx + 14.0f, skY + 12.0f);
+        g.setColour(kAccent); g.strokePath(band, juce::PathStrokeType(2.6f));
+        g.fillRoundedRectangle(cx - 18.0f, skY + 8.0f, 6.0f, 11.0f, 2.0f);
+        g.fillRoundedRectangle(cx + 12.0f, skY + 8.0f, 6.0f, 11.0f, 2.0f);
+    } else if (costume == 2) {                            // top hat
+        g.setColour(dark); g.fillRoundedRectangle(cx - 9.0f, skY - 14.0f, 18.0f, 15.0f, 1.5f);
+        g.setColour(kAccent); g.fillRect(cx - 9.0f, skY - 3.0f, 18.0f, 2.6f);
+        g.setColour(dark); g.fillRoundedRectangle(cx - 16.0f, skY - 0.5f, 32.0f, 3.2f, 1.2f);
+        g.setColour(kBoneDim); g.drawRoundedRectangle(cx - 16.0f, skY - 0.5f, 32.0f, 3.2f, 1.2f, 0.7f);
+    } else if (costume == 3) {                            // shades
+        g.setColour(dark);
+        g.fillRoundedRectangle(cx - 11.5f, skY + 8.0f, 10.5f, 8.0f, 2.5f);
+        g.fillRoundedRectangle(cx + 1.0f, skY + 8.0f, 10.5f, 8.0f, 2.5f);
+        g.fillRect(cx - 1.5f, skY + 10.0f, 3.0f, 1.6f);
+    }
     // arms: shoulder -> elbow -> hand, with joint knobs and a little hand
     auto arm = [&](float sx, float hx, bool pressed) {
         const float hy = handY + (pressed ? 4.0f : 0.0f);
@@ -517,43 +884,64 @@ void TonicRecreationAudioProcessorEditor::paintSpine(juce::Graphics& g, juce::Re
         const int pc = whitePc[i];
         const bool tonic = view.root >= 0 && pc == view.root;
         const bool diatonic = view.root >= 0 && inScale(pc, view.root, view.mode);
-        const bool sounding = previewPc == pc;
+        const bool sounding = previewPc == pc || ((liveMask >> pc) & 1u) != 0;
         const juce::Rectangle<float> k(area.getX() + ww * (float) i + 0.8f, kbTop, ww - 1.6f, kbH);
-        g.setColour(diatonic ? juce::Colour(0xffd9d2bd) : juce::Colour(0xff8c8573));
+        g.setColour(diatonic ? kKeyWhiteDia : kKeyWhiteOther);
         g.fillRoundedRectangle(k, 2.0f);
         g.setColour(kAccent.withAlpha((tonic ? 0.30f : 0.0f) + (sounding ? 0.55f : 0.0f) + 0.55f * glow(pc)));
         g.fillRoundedRectangle(k, 2.0f);
         if (sounding || tonic) { g.setColour(kAccent); g.drawRoundedRectangle(k.reduced(0.5f), 2.0f, 1.4f); }
-        drawText(g, names[pc], juce::Rectangle<float>(k.getX(), k.getBottom() - 14.0f, k.getWidth(), 14.0f), 9.0f, tonic, tonic ? juce::Colour(0xff17210a) : juce::Colour(0xff3a362b),
+        drawText(g, names[pc], juce::Rectangle<float>(k.getX(), k.getBottom() - 14.0f, k.getWidth(), 14.0f), 9.0f, tonic, tonic ? kOnAccent : kKeyInk,
                  juce::Justification::centred);
     }
     for (int i = 0; i < 5; ++i) {
         const int pc = blackPc[i];
         const bool tonic = view.root >= 0 && pc == view.root;
         const bool diatonic = view.root >= 0 && inScale(pc, view.root, view.mode);
-        const bool sounding = previewPc == pc;
+        const bool sounding = previewPc == pc || ((liveMask >> pc) & 1u) != 0;
         const juce::Rectangle<float> k(area.getX() + ww * (float) blackSlot[i] - bw * 0.5f, kbTop, bw, bh);
-        g.setColour(diatonic ? juce::Colour(0xff4b473b) : juce::Colour(0xff211f19));
+        g.setColour(diatonic ? kKeyBlackDia : kKeyBlackOther);
         g.fillRoundedRectangle(k, 2.0f);
         g.setColour(kAccent.withAlpha((tonic ? 0.35f : 0.0f) + (sounding ? 0.6f : 0.0f) + 0.6f * glow(pc)));
         g.fillRoundedRectangle(k, 2.0f);
         if (sounding || tonic) { g.setColour(kAccent); g.drawRoundedRectangle(k.reduced(0.5f), 2.0f, 1.4f); }
     }
-    // hint
-    if (view.root >= 0)
-        drawText(g, hover ? "CLICK TO HEAR THE KEY" : "CLICK TO PLAY", { area.getX(), area.getY() - 1.0f, area.getWidth(), 11.0f },
-                 8.5f, hover, hover ? kAccent : kBoneFaint, juce::Justification::topRight, 0.14f);
+    // Lead melody: dots on the keys sized by how often that pitch class was the lead note, current note lit.
+    {
+        const int now = processor.getMelodyNow();
+        std::array<float,12> use {}; float mx = 0.0f;
+        for (int pc = 0; pc < 12 && !resultsHeld; ++pc) { use[(size_t) pc] = processor.getMelodyUse(pc); mx = juce::jmax(mx, use[(size_t) pc]); }
+        if (mx > 0.0f) {
+            for (int pc = 0; pc < 12; ++pc) {
+                const bool black = !(pc == 0 || pc == 2 || pc == 4 || pc == 5 || pc == 7 || pc == 9 || pc == 11);
+                const float x = keyX(pc), y = black ? kbTop + 7.0f : kbTop + 8.0f;
+                const float r = 1.4f + 3.2f * use[(size_t) pc];
+                if (use[(size_t) pc] < 0.05f && pc != now) continue;
+                g.setColour(pc == now ? kAccent : (black ? kBone.withAlpha(0.85f) : kKeyInk));
+                g.fillEllipse(x - r, y - r, 2.0f * r, 2.0f * r);
+                if (pc == now) { g.setColour(kBone); g.drawEllipse(x - r - 1.5f, y - r - 1.5f, 2.0f * r + 3.0f, 2.0f * r + 3.0f, 1.0f); }
+            }
+            std::array<int,12> order; for (int i = 0; i < 12; ++i) order[(size_t) i] = i;
+            std::sort(order.begin(), order.end(), [&](int a, int b) { return use[(size_t) a] > use[(size_t) b]; });
+            juce::String melody;
+            for (int i = 0; i < 3; ++i) if (use[(size_t) order[(size_t) i]] >= 0.35f) melody += "  " + juce::String(names[order[(size_t) i]]);
+            if (melody.isNotEmpty() && !hover)
+                drawText(g, "MELODY" + melody, { area.getX(), area.getY() - 1.0f, 130.0f, 12.0f }, 9.5f, true, kBoneDim,
+                         juce::Justification::topLeft, 0.12f);
+        }
+    }
+    // Hint only while the pointer is over the scene (it replaces the melody label), so the top row stays quiet.
+    if (hover && view.root >= 0)
+        drawText(g, "CLICK: CHORD LOOP   SHIFT: SCALE", { area.getX(), area.getY() - 1.0f, area.getWidth() - 50.0f, 12.0f },
+                 9.5f, true, kAccent, juce::Justification::topLeft, 0.1f);
 }
 
 void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(14.0f, 276.0f, 257.0f, 100.0f);
-    drawCard(g, r, palette_);
-    drawText(g, "TEMPO", { r.getX() + 16.0f, r.getY() + 9.0f, 100.0f, 14.0f }, 9.0f, true, kBoneDim,
+    drawCard(g, r);
+    drawText(g, "TEMPO", { r.getX() + 16.0f, r.getY() + 9.0f, 100.0f, 14.0f }, 10.5f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
-    const bool have = view.bpmText != "--";
+    const bool have = view.bpmHave;
     drawText(g, view.bpmText, { r.getX() + 16.0f, r.getY() + 28.0f, 150.0f, 44.0f }, 38.0f, true,
              have ? kAccent : kBoneDim);
     if (have) {
@@ -561,17 +949,14 @@ void TonicRecreationAudioProcessorEditor::paintTempoCard(juce::Graphics& g) {
         drawText(g, "BPM", { r.getX() + 16.0f + w + 6.0f, r.getY() + 46.0f, 50.0f, 16.0f }, 10.5f, true, kBoneDim,
                  juce::Justification::centredLeft, 0.12f);
     }
-    drawText(g, view.bpmHint, { r.getX() + 16.0f, r.getY() + 74.0f, 160.0f, 14.0f }, 11.0f, false, kBoneDim);
-    drawTeeth(g, { r.getRight() - 100.0f, r.getY() + 16.0f, 84.0f, 12.0f }, view.bpmConfidence, palette_, 8);
+    drawText(g, view.bpmHint, { r.getX() + 16.0f, r.getY() + 73.0f, 170.0f, 16.0f }, 12.5f, false, kBoneDim);
+    drawTeeth(g, { r.getRight() - 100.0f, r.getY() + 16.0f, 84.0f, 12.0f }, view.bpmConfidence, 8);
 }
 
 void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(279.0f, 276.0f, 257.0f, 100.0f);
-    drawCard(g, r, palette_);
-    drawText(g, "REFERENCE A", { r.getX() + 16.0f, r.getY() + 9.0f, 120.0f, 14.0f }, 9.0f, true, kBoneDim,
+    drawCard(g, r);
+    drawText(g, "REFERENCE A", { r.getX() + 16.0f, r.getY() + 9.0f, 120.0f, 14.0f }, 10.5f, true, kBoneDim,
              juce::Justification::centredLeft, 0.2f);
     drawText(g, view.refText, { r.getX() + 16.0f, r.getY() + 28.0f, 130.0f, 44.0f }, 38.0f, true,
              view.tuningValid ? kAccent : kBoneDim);
@@ -579,7 +964,7 @@ void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) 
         const float w = textWidth(makeFont(38.0f, true), view.refText);
         drawText(g, "Hz", { r.getX() + 16.0f + w + 6.0f, r.getY() + 46.0f, 30.0f, 16.0f }, 10.5f, true, kBoneDim);
     }
-    drawText(g, view.refHint, { r.getX() + 16.0f, r.getY() + 74.0f, 130.0f, 14.0f }, 11.0f, false, kBoneDim);
+    drawText(g, view.refHint, { r.getX() + 16.0f, r.getY() + 73.0f, 140.0f, 16.0f }, 12.5f, false, kBoneDim);
 
     // Cents gauge, -50 .. +50, with a pointer. Bone ticks, accent pointer.
     const float gx = r.getX() + 164.0f, gw = 76.0f, gy = r.getY() + 62.0f;
@@ -591,9 +976,9 @@ void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) 
         g.setColour(t == 0 ? kBone : kBoneDim);
         g.fillRect(x - 0.5f, gy - th, 1.0f, th);
     }
-    drawText(g, "-50", { gx - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
-    drawText(g, "0", { gx + gw * 0.5f - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
-    drawText(g, "+50", { gx + gw - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 9.0f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "-50", { gx - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 10.0f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "0", { gx + gw * 0.5f - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 10.0f, false, kBoneDim, juce::Justification::centred);
+    drawText(g, "+50", { gx + gw - 14.0f, gy + 3.0f, 28.0f, 11.0f }, 10.0f, false, kBoneDim, juce::Justification::centred);
     if (view.tuningValid) {
         const float x = gx + gw * (juce::jlimit(-50.0f, 50.0f, view.cents) + 50.0f) / 100.0f;
         juce::Path tri; tri.addTriangle(x, gy + 1.0f, x - 4.5f, gy - 11.0f, x + 4.5f, gy - 11.0f);
@@ -602,17 +987,14 @@ void TonicRecreationAudioProcessorEditor::paintReferenceCard(juce::Graphics& g) 
 }
 
 void TonicRecreationAudioProcessorEditor::paintFooter(juce::Graphics& g) {
-    const auto kBg=palette_.background,kPanel=palette_.panel,kPanelHi=palette_.panelHi;
-    const auto kLine=palette_.line,kBone=palette_.bone,kBoneDim=palette_.boneDim;
-    const auto kBoneFaint=palette_.boneFaint,kAccent=palette_.accent;
     const juce::Rectangle<float> r(14.0f, 386.0f, 522.0f, 52.0f);
-    drawCard(g, r, palette_);
+    drawCard(g, r);
     if (view.busy) {
         g.setColour(kAccent);
         g.fillRect(r.getX() + 1.0f, r.getY() + 1.0f, (r.getWidth() - 2.0f) * view.progress, 2.0f);
     }
-    drawText(g, view.status, { r.getX() + 16.0f, r.getY() + 4.0f, 172.0f, r.getHeight() - 8.0f }, 11.5f, false,
-             processor.fileFailed() ? juce::Colour(0xffe58a6b) : kBoneDim);
+    drawText(g, view.status, { r.getX() + 16.0f, r.getY() + 4.0f, 290.0f, r.getHeight() - 8.0f }, 12.5f, false,
+             processor.fileFailed() ? kWarn : kBoneDim);
 }
 
 void TonicRecreationAudioProcessorEditor::resized() {
@@ -624,10 +1006,12 @@ void TonicRecreationAudioProcessorEditor::resized() {
     pauseButton.setBounds(fit(332.0f, 16.0f, 134.0f, 24.0f));
     resetButton.setBounds(fit(472.0f, 16.0f, 62.0f, 24.0f));
     if (scene != nullptr) scene->setBounds(fit(sceneArea.getX(), sceneArea.getY(), sceneArea.getWidth(), sceneArea.getHeight()));
-    if (skullThemeClick) skullThemeClick->setBounds(fit(14.0f, 8.0f, 78.0f, 34.0f));
-    worldButton_.setBounds(fit(217.0f, 398.0f, 125.0f, 28.0f));
     openFileButton.setBounds(fit(350.0f, 398.0f, 90.0f, 28.0f));
     liveButton.setBounds(fit(444.0f, 398.0f, 84.0f, 28.0f));
+    helpButton.setBounds(fit(234.0f, 74.0f, 20.0f, 20.0f));
+    skinButton.setBounds(fit(10.0f, 6.0f, 84.0f, 38.0f));
+    lockButton.setBounds(fit(sceneArea.getRight() - 44.0f, 74.0f, 44.0f, 16.0f));
+    tagButton.setBounds(fit(276.0f, 16.0f, 50.0f, 24.0f));
     halfButton.setBounds(fit(187.0f, 312.0f, 24.0f, 16.0f));
     doubleButton.setBounds(fit(215.0f, 312.0f, 24.0f, 16.0f));
 }
@@ -639,12 +1023,12 @@ bool TonicRecreationAudioProcessorEditor::isInterestedInFileDrag(const juce::Str
 }
 void TonicRecreationAudioProcessorEditor::fileDragEnter(const juce::StringArray&, int, int) {
     dragHover = true;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setVisible(false);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(false);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::fileDragExit(const juce::StringArray&) {
     dragHover = false;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton }) b->setVisible(true);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(true);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int) {
@@ -654,9 +1038,10 @@ void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& 
 void TonicRecreationAudioProcessorEditor::loadFile(const juce::File& f) {
     if (!f.existsAsFile()) return;
     if (processor.requestFileAnalysis(f)) {
-        bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
+        hintDismissed = false; resetGate(); bpmFactor = 1.0f; halfButton.setToggleState(false, juce::dontSendNotification); doubleButton.setToggleState(false, juce::dontSendNotification);
         pauseButton.setToggleState(false, juce::dontSendNotification);
         processor.setScaleOutput(false);
+        processor.setWorldSharing(false);
         timerCallback();
     }
 }

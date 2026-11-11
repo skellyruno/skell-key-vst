@@ -15,7 +15,6 @@
 #include "TemporalTonalFeatures.h"
 #include "KeyTemporalConsensus.h"
 #include <SkellCore/WorldLink.h>
-#include <SkellCore/SkullTheme.h>
 
 class TonicRecreationAudioProcessor final : public juce::AudioProcessor, private juce::Timer {
 public:
@@ -28,7 +27,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
     const juce::String getName() const override { return "Skell Key"; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
@@ -43,7 +42,41 @@ public:
     void playKeyPreview(int root,int mode);
     // "Send to autotune": while on, the detected scale is held as MIDI notes on the plugin's MIDI output.
     void setScaleOutput(bool on) { scaleOutputOn.store(on); }
+    // SkellCore/SkellWorld sync. Opt in explicitly on the message thread.
+    // Network operations are performed exclusively by WorldLink's worker.
+    bool setWorldSharing(bool on);
+    bool isWorldSharing() const noexcept { return worldLink.requested(); }
+    bool isWorldOnline() const noexcept { return worldLink.online(); }
     bool isScaleOutputOn() const { return scaleOutputOn.load(); }
+    int getTheme() const { return (int) state.state.getProperty("theme",0); }
+    void setTheme(int t) { state.state.setProperty("theme",t,nullptr); }
+    // Last confirmed result, kept in the plugin state so it is still there when a project is reopened.
+    void saveResult(int root,int mode,float bpm,float hz,float tuneConf) {
+        state.state.setProperty("savedRoot",root,nullptr); state.state.setProperty("savedMode",mode,nullptr);
+        state.state.setProperty("savedBpm",(double)bpm,nullptr); state.state.setProperty("savedHz",(double)hz,nullptr);
+        state.state.setProperty("savedTuneConf",(double)tuneConf,nullptr); }
+    void clearSavedResult() { saveResult(-1,2,0.0f,0.0f,0.0f); }
+    int getSavedRoot() const { return (int) state.state.getProperty("savedRoot",-1); }
+    int getSavedMode() const { return (int) state.state.getProperty("savedMode",2); }
+    float getSavedBpm() const { return (float) (double) state.state.getProperty("savedBpm",0.0); }
+    float getSavedHz() const { return (float) (double) state.state.getProperty("savedHz",0.0); }
+    float getSavedTuneConf() const { return (float) (double) state.state.getProperty("savedTuneConf",0.0); }
+    // Playable piano: notes from the editor (mouse / computer keyboard) or from a MIDI controller are voiced
+    // by a small synth that is added to the output after analysis (so it is never analysed).
+    void liveNote(int midi,bool on);                 // message thread
+    void setScaleLock(bool on) { scaleLock.store(on); }
+    bool isScaleLockOn() const { return scaleLock.load(); }
+    unsigned getLiveMask() const { return liveMask.load(std::memory_order_relaxed); }   // pitch classes held (bit 0 = C)
+    int getLiveLast() const { return liveLast.load(std::memory_order_relaxed); }
+    // File currently shown in file mode (for tagging).
+    juce::String getFilePath() const;
+    void retargetFile(const juce::File& renamed);
+    // Chord-loop preview: plays the recent chord progression of the track (falls back to the key preview).
+    void playChordLoop();
+    int getChordHistoryCount() const { return chordHistCount.load(std::memory_order_relaxed); }
+    // Lead-melody evidence: how often each pitch class was the most salient mid-register note (0..1), and the latest one.
+    float getMelodyUse(int pc) const { return melodyShown[(size_t)juce::jlimit(0,11,pc)].load(std::memory_order_relaxed); }
+    int getMelodyNow() const { return melodyNow.load(std::memory_order_relaxed); }
     int getPreviewPitchClass() const { return previewNote.load(std::memory_order_relaxed); } // -1 when silent
     float getInputLevel() const { return inputLevel.load(std::memory_order_relaxed); }
     void requestReset() { resetRequested.store(true, std::memory_order_release); analysisReady.signal(); }
@@ -67,6 +100,7 @@ public:
     float getTuningConfidence() const { return tuningConfidence.load(); }
     float getDetectedBpm() const { return detectedBpm.load(std::memory_order_relaxed); }
     float getBpmConfidence() const { return bpmConfidence.load(std::memory_order_relaxed); }
+    float getAltTempoRatio() const { return altTempoRatio.load(std::memory_order_relaxed); } // 2, 0.5 or 0: a credible octave alternative
     float getTempoAmbiguity() const { return tempoAmbiguity.load(std::memory_order_relaxed); }
     float getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
     bool hasHostBpm() const { return hostBpmValid.load(std::memory_order_relaxed); }
@@ -82,22 +116,14 @@ public:
     float getRankedScore(int i) const { return candidateScores[(size_t)juce::jlimit(0,2,i)].load(); }
     float getChroma(int i) const { return liveChroma[(size_t)juce::jlimit(0,11,i)].load(); }
     juce::AudioProcessorValueTreeState& getState() { return state; }
-    skellcore::world::WorldLink worldLink{"skell.key","Skell Key"};
-    void joinWorld() { if(worldLink.join()) { worldLastSent_=0; worldStable_=0; startTimerHz(5); } }
-    void leaveWorld() { stopTimer(); worldLink.leave(); }
-    skellcore::ui::SkullSkin getSkullSkin() const noexcept {
-        return skellcore::ui::skinFromIndex(skinIndex_.load(std::memory_order_relaxed));
-    }
-    void setSkullSkin(skellcore::ui::SkullSkin skin) {
-        const auto selected=static_cast<int>(skin);
-        skinIndex_.store(selected,std::memory_order_release);
-        state.state.setProperty("skellSkullSkin",selected,nullptr);
-    }
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 private:
-    void timerCallback() override;
-    std::atomic<int> skinIndex_{0};
-    int worldCandidate_=0,worldStable_=0,worldLastSent_=0,worldRefresh_=0;
+    void timerCallback() override; // message-thread sync poll, not a DSP callback
+    skellcore::world::WorldLink worldLink {"skell.key", "Skell Key"};
+    int syncCandidateRoot=-1, syncCandidateMode=-1;
+    double syncCandidateSince=0.0;
+    unsigned int lastSyncMs=0;
+    std::uint64_t lastSyncPacket=0;
     static constexpr int windowSize = 16384, hopSize = 4096, fifoSize = 65536;
     juce::AudioProcessorValueTreeState state;
     std::atomic<bool> paused {false}, resetRequested {false};
@@ -112,8 +138,9 @@ private:
     static constexpr int onsetHopRate = 100;
     std::array<float,onsetHistoryLength> onsetHistory {};
     int onsetWrite=0, onsetCount=0, onsetSamples=0, bpmAnalysisFrames=0, tempoSilentHops=0;
-    std::atomic<float> tempoAmbiguity {0.0f};
+    std::atomic<float> tempoAmbiguity {0.0f}, altTempoRatio {0.0f};
     float onsetEnergySum=0.0f, onsetHighEnergySum=0.0f;
+    int altStreak=0; float altStreakRatio=0.0f; // worker only
     float tempoHighpassDecay=0.0f; // Calculated on worker at sample-rate changes, never per sample
     float tempoLowpass=0.0f, previousEnergy=0.0f, previousHighEnergy=0.0f, smoothedOnset=0.0f;
     float lastStableBpm=0.0f, loopFastBpm=0.0f; // loopFastBpm: tempo confirmed by loop-length fit
@@ -192,13 +219,36 @@ private:
     void analyseBlock(juce::AudioBuffer<float>&);
     void renderPreview(juce::AudioBuffer<float>&);
     void emitScaleMidi(juce::MidiBuffer&);
+    struct LiveVoice { bool active=false, held=false; int midi=60; double phase=0.0; juce::int64 age=0, relAge=0; float vel=1.0f; };
+    std::array<LiveVoice,16> liveVoices {};
+    std::array<int,128> liveMap = [] { std::array<int,128> a; a.fill(-1); return a; }();   // input note -> note actually played
+    juce::AbstractFifo liveFifo {64};
+    std::array<int,64> liveQueue {};
+    std::atomic<unsigned> liveMask {0};
+    std::atomic<int> liveLast {-1};
+    std::atomic<bool> scaleLock {false};
+    juce::String displayedFilePath;
+    void handleLiveEvent(int midi,bool on,int vel);
+    void drainLiveInput(juce::MidiBuffer&);
+    void renderLive(juce::AudioBuffer<float>&);
     std::atomic<bool> scaleOutputOn {false};
     unsigned int scaleSentMask=0; // audio thread only
     std::atomic<float> inputLevel {0.0f};
     std::atomic<bool> previewRequest {false};
     std::atomic<int> previewRoot {0}, previewMode {0}, previewNote {-1};
     struct PreviewVoice { bool active=false; int midi=60; double phase=0.0; juce::int64 start=0, length=0; };
-    std::array<PreviewVoice,12> voices {};
+    std::array<PreviewVoice,64> voices {};
+    // Chord history written by the worker (packed root*8+quality), read by the message thread.
+    std::array<std::atomic<int>,16> chordHist {};
+    std::atomic<int> chordHistCount {0}, chordHistWrite {0};
+    int lastHistChord=-1;                       // worker only
+    std::array<std::atomic<int>,6> loopPlan {};
+    std::atomic<int> loopPlanCount {0};
+    std::atomic<bool> chordLoopRequest {false};
+    std::array<float,12> melodyHist {};         // worker only
+    std::array<std::atomic<float>,12> melodyShown {};
+    std::atomic<int> melodyNow {-1};
+    int melodyHold=0;
     juce::int64 previewClock=0, previewTotal=0; bool previewRunning=false; // audio thread only
     void analyseWindow();
     void updateHarmonicMask();
