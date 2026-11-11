@@ -61,7 +61,7 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 ## V56 changes
 - Tempo: half-time alias rule (2:1) plus sub-lag period refinement; 156 BPM trap loops now read ~156, not 78.
 - Tempo card: /2 and x2 toggle buttons (green when on, one cancels the other) to correct an octave error by hand.
-- "Send to Skelltune" replaces Pause: holds the detected scale as MIDI notes (C4-B4 octave) on the MIDI output and copies the key to the clipboard. Route the plugin's MIDI output to your autotune's MIDI scale input (host dependent).
+- The original MIDI-and-clipboard "Send to Skelltune" behavior has been superseded by the current **SEND TO TUNE** button described below; current builds do not inject a held scale or overwrite the clipboard when sending.
 - Window default 495 x 405 (10 % smaller).
 - Key (file mode): the opening/closing tonic-triad evidence is weighted 2.5x higher. Real-composition key accuracy 108 -> 118 / 150, synthetic 224 -> 225 / 288. Higher weights score better on pieces but flip the malta beat to minor, so 1.0 is the compromise.
 - Tempo: the final period is refined to ~0.1 % so a 156 BPM loop reads 156.07, and trimmed cuts of the malta beat now all read 149.9-150.1.
@@ -87,20 +87,30 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 
 ## V56 SkellCore inter-plugin key, scale & A4 sync
 
-Skell Key's **Send to SKELL** toggle broadcasts the currently detected root, major/natural-minor
-mode, the absolute 12-pitch-class scale mask, and A4 reference (400–480 Hz) to other SKELL
-plugins using SkellCore's local WorldLink. A4=440 Hz is used when no reliable tuning measurement
-is available. The sender only publishes a stable live key (at least four seconds of agreement)
-or a completed file result; it does not broadcast a mid-file partial guess. The snapshot is
-published atomically via the versioned `musical.tuning` topic and a legacy `musical.key` event.
+**SEND TO TUNE** is the explicit sender trigger. The button toggles sharing on/off;
+no key, scale, or A4 is published by Skell Key before clicking it. Once enabled, the sender
+broadcasts the confirmed root, major/natural-minor mode, 12-note scale mask, and A4 reference
+(400–480 Hz) over the authenticated localhost SkellCore WorldLink. It continues to send updates
+when the confirmed key or tuning changes, and periodically refreshes them for late receivers.
+An already-confirmed key is eligible to send immediately on click instead of waiting for a
+second four-second confirmation; unconfirmed live guesses remain suppressed. A4=440 Hz is
+used only if no reliable current or saved measurement exists.
 
-**Use:** Launch the optional local SkellWorld Hub first (localhost TCP port 48673), then load
-Skell Key, let it detect a key, and enable **Send to SKELL**. In SkellyTune's Advanced Tuning
-panel, select **JOIN WORLD**, then **FOLLOW SKELLKEY**; custom note masks should be reset before
-following. In OmniChoir, select **FOLLOW KEY** in the header. The receiver must opt in; remote
-values do not overwrite saved plugin states or the host's parameter automation. WorldLink uses
-its own worker; no network I/O runs on the audio thread. The existing optional MIDI scale
-output remains as a DAW-routed fallback for older or unrelated plugins.
+**Use:** Run the local **SkellWorld Hub** on 127.0.0.1:48673, insert Skell Key and
+SkellyTune Mini, let Skell Key detect a key, and click **SEND TO TUNE**. SkellyTune Mini
+automatically connects to the hub and updates its existing Key, Scale, and A4 parameters;
+there is no JOIN or FOLLOW control in Mini. Click SEND TO TUNE again to stop sharing.
+The connection stays enabled through silence and switching from file to live input;
+if the key is still being detected, the button shows **WAITING FOR KEY**.
+If the hub is unavailable, Skell Key displays **WAITING FOR HUB**, and Mini continues using
+its current tuning until a valid authenticated Skell Key packet arrives. The sender never
+writes to the clipboard or injects scale MIDI as a side effect of this button.
+
+The shared snapshot uses the versioned `musical.tuning` topic plus a legacy
+`musical.key` event. All socket traffic runs on the WorldLink worker, never on the audio
+callback. Mini preserves existing parameter IDs and project compatibility; linked values
+are intentionally reflected in its host Key/Scale/A4 parameters. A custom manual piano-note
+mask still overrides the linked note selection until reset by double-clicking a note.
 
 For future autotune/choir plugins, link the pinned `SkellCore::UI` CMake target, create
 `skellcore::world::WorldLink` on a non-audio-owned processor and, after user opt-in,

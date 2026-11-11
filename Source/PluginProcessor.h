@@ -44,7 +44,7 @@ public:
     void setScaleOutput(bool on) { scaleOutputOn.store(on); }
     // SkellCore/SkellWorld sync. Opt in explicitly on the message thread.
     // Network operations are performed exclusively by WorldLink's worker.
-    bool setWorldSharing(bool on);
+    bool setWorldSharing(bool on, int confirmedRoot = -1, int confirmedMode = -1);
     bool isWorldSharing() const noexcept { return worldLink.requested(); }
     bool isWorldOnline() const noexcept { return worldLink.online(); }
     bool isScaleOutputOn() const { return scaleOutputOn.load(); }
