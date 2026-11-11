@@ -285,7 +285,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
     pauseButton.onClick = [this] {
         const bool on = pauseButton.getToggleState() && view.root >= 0;
-        const bool connected = processor.setWorldSharing(on);
+        const bool connected = processor.setWorldSharing(on, view.root, view.mode);
         // Send only the typed SkellCore tuning packet. The old MIDI scale
         // output could trigger sustained notes in other DAW instruments.
         processor.setScaleOutput(false);
@@ -293,10 +293,8 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
             pauseButton.setToggleState(false, juce::dontSendNotification);
             processor.setScaleOutput(false);
         }
-        if (on && connected) {
-            const bool flats = processor.getState().getRawParameterValue("preferFlats")->load() > 0.5f;
-            juce::SystemClipboard::copyTextToClipboard(juce::String((flats ? flatNames : sharpNames)[view.root]) + (view.mode == 0 ? " major" : " minor"));
-        }
+        // SEND TO TUNE affects only SkellCore sharing; do not replace the
+        // user's system clipboard or inject sustained scale MIDI notes.
         timerCallback();
     };
     resetButton.onClick = [this] {
