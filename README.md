@@ -56,7 +56,7 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 - The test audio is **rendered from scores or generated**, not commercial recordings, so treat the numbers as evidence of direction, not a guarantee. Compare against tracks whose key and BPM you know.
 - **Tempo still often lands on half-time** for accent-alternating drum patterns (kick/snare backbeat). Fixing that properly needs a different onset representation and real reference tracks to validate; the prior change only helps part of it.
 - Relative major/minor remains the most common key confusion.
-- The Windows GitHub Actions build and FL Studio host testing have not been run. The sources were compiled and run here against JUCE 8.0.12 on Linux (GCC), including the editor.
+- The Windows VST3 GitHub Actions build and key/scale/A4 protocol tests have passed for the current hub-free integration. A manual, two-plugin FL Studio host session is still required for release validation.
 
 ## V56 changes
 - Tempo: half-time alias rule (2:1) plus sub-lag period refinement; 156 BPM trap loops now read ~156, not 78.

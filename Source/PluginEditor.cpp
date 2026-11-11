@@ -641,7 +641,7 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const bool sending = pauseButton.getToggleState();
         pauseButton.setEnabled(haveKey || sending); // can always click OFF
         pauseButton.setButtonText(!sending ? "SEND TO TUNE"
-            : (!processor.isWorldOnline() ? "WAITING FOR HUB"
+            : (!processor.isWorldOnline() ? "LINK UNAVAILABLE"
                 : (haveKey ? "SENDING TO TUNE" : "WAITING FOR KEY")));
     }
     {   // Octave hint: only while no manual correction is active.
