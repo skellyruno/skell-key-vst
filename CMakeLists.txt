@@ -21,7 +21,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(SkellCoreRepo
         GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
-        GIT_TAG 098cf696f7e44cf5fbfe8a1566e06ac39ffbc747
+        GIT_TAG 9a014a7c143f3d96f1217b9c80519f5469818ae8
         GIT_SHALLOW FALSE)
     FetchContent_GetProperties(SkellCoreRepo)
     if(NOT skellcorerepo_POPULATED)
