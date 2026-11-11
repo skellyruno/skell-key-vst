@@ -275,10 +275,10 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
         hintDismissed = true;
         if (doubleButton.getToggleState()) halfButton.setToggleState(false, juce::dontSendNotification);
         bpmFactor = doubleButton.getToggleState() ? 2.0f : 1.0f; timerCallback(); };
-    pauseButton.setButtonText("Send to SKELL");
+    pauseButton.setButtonText("SEND TO TUNE");
     pauseButton.setClickingTogglesState(true);
     pauseButton.setEnabled(false);
-    pauseButton.setTooltip("Share key, scale and A4 with SkellTune, OmniChoir and future SKELL plugins via SkellWorld. Also sends scale MIDI for legacy routing. Start the SkellWorld Hub to sync across plugins.");
+    pauseButton.setTooltip("Click to send Key, Scale and A4 to SkellyTune Mini using the local SkellWorld Hub. Click again to stop following. Does not play MIDI notes.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
@@ -286,7 +286,9 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     pauseButton.onClick = [this] {
         const bool on = pauseButton.getToggleState() && view.root >= 0;
         const bool connected = processor.setWorldSharing(on);
-        processor.setScaleOutput(on); // MIDI fallback remains available
+        // Send only the typed SkellCore tuning packet. The old MIDI scale
+        // output could trigger sustained notes in other DAW instruments.
+        processor.setScaleOutput(false);
         if (on && !connected) {
             pauseButton.setToggleState(false, juce::dontSendNotification);
             processor.setScaleOutput(false);
@@ -640,8 +642,8 @@ void TonicRecreationAudioProcessorEditor::timerCallback() {
         const bool haveKey = root >= 0;
         if (!haveKey && pauseButton.getToggleState()) { pauseButton.setToggleState(false, juce::dontSendNotification); processor.setScaleOutput(false); processor.setWorldSharing(false); }
         pauseButton.setEnabled(haveKey);
-        pauseButton.setButtonText(!pauseButton.getToggleState() ? "Send to SKELL"
-            : (processor.isWorldOnline() ? "SKELL sync on" : "Waiting for Hub"));
+        pauseButton.setButtonText(!pauseButton.getToggleState() ? "SEND TO TUNE"
+            : (processor.isWorldOnline() ? "SENDING TO TUNE" : "WAITING FOR HUB"));
     }
     {   // Octave hint: only while no manual correction is active.
         const float alt = processor.getAltTempoRatio();
@@ -683,7 +685,7 @@ void TonicRecreationAudioProcessorEditor::paint(juce::Graphics& g) {
             {"Shift + skeleton", "hear the key as a scale"},
             {"Right-click skeleton", "change its costume"},
             {"/2   x2", "fix a half- or double-time tempo (green = applied)"},
-            {"Send to SKELL", "share key + scale + A4 via SkellCore; MIDI fallback"},
+            {"Send to Tune", "send key, scale + A4 to SkellyTune via SkellWorld"},
             {"Open Audio / drop a file", "analyse a whole file"},
             {"Pulsing /2 or x2", "a likely alternative tempo"},
             {"Dots on the keys", "how often each note led the melody"},
