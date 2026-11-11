@@ -278,7 +278,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     pauseButton.setButtonText("SEND TO TUNE");
     pauseButton.setClickingTogglesState(true);
     pauseButton.setEnabled(false);
-    pauseButton.setTooltip("Click to send Key, Scale and A4 to SkellyTune Mini using the local SkellWorld Hub. Click again to stop following. Does not play MIDI notes.");
+    pauseButton.setTooltip("Send the confirmed Key, Scale and A4 to SKELL tuners and choirs. Works locally on Windows with no Hub, Python or internet. Click again to stop.");
     resetButton.setTooltip("Forget everything heard so far and start again");
     openFileButton.setTooltip("Analyze an audio file. You can also drop one anywhere on this window.");
     liveButton.setTooltip("Leave file mode and analyze the DAW input again");
