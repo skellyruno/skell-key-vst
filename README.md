@@ -96,21 +96,25 @@ An already-confirmed key is eligible to send immediately on click instead of wai
 second four-second confirmation; unconfirmed live guesses remain suppressed. A4=440 Hz is
 used only if no reliable current or saved measurement exists.
 
-**Use:** Run the local **SkellWorld Hub** on 127.0.0.1:48673, insert Skell Key and
-SkellyTune Mini, let Skell Key detect a key, and click **SEND TO TUNE**. SkellyTune Mini
-automatically connects to the hub and updates its existing Key, Scale, and A4 parameters;
-there is no JOIN or FOLLOW control in Mini. Click SEND TO TUNE again to stop sharing.
-The connection stays enabled through silence and switching from file to live input;
-if the key is still being detected, the button shows **WAITING FOR KEY**.
-If the hub is unavailable, Skell Key displays **WAITING FOR HUB**, and Mini continues using
-its current tuning until a valid authenticated Skell Key packet arrives. The sender never
-writes to the clipboard or injects scale MIDI as a side effect of this button.
+**Customer installation (Windows):** Install both VST3 plugins normally,
+open Skell Key and SkellyTune Mini (or OmniChoir) in your DAW, allow Skell Key
+to confirm a key and click **SEND TO TUNE**. That's all: the shared SkellCore
+code uses Windows same-session shared memory. **No Hub, installer, Python,
+internet connection or extra receiver buttons are required.** When Skell Key
+has no confirmed key the sender displays **WAITING FOR KEY** until detection
+resumes; click SEND TO TUNE again to stop sharing. The connection stays enabled
+through quiet passages and switching from file to live input.
 
-The shared snapshot uses the versioned `musical.tuning` topic plus a legacy
-`musical.key` event. All socket traffic runs on the WorldLink worker, never on the audio
-callback. Mini preserves existing parameter IDs and project compatibility; linked values
-are intentionally reflected in its host Key/Scale/A4 parameters. A custom manual piano-note
-mask still overrides the linked note selection until reset by double-clicking a note.
+The hubless packet carries the versioned `musical.tuning` snapshot and a
+5-second freshness window to prevent crashed instances replaying old tuning.
+The sender never writes to the clipboard or injects sustained MIDI scale notes.
+Recipients retain their existing VST3/parameter IDs; Mini reflects received
+Key, Scale and A4 in its saved/automatable controls. A manual piano-note mask
+still overrides automatic scale selection until reset. If several Skell Key
+instances broadcast, the most recent sender wins. SkellWorld Hub remains an
+optional tool for the wider ecosystem and legacy informational topics, but it
+is **not** required for this Windows tuning link. On non-Windows hosts, the
+existing optional Hub transport remains the fallback.
 
 For future autotune/choir plugins, link the pinned `SkellCore::UI` CMake target, create
 `skellcore::world::WorldLink` on a non-audio-owned processor and, after user opt-in,
