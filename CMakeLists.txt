@@ -20,7 +20,7 @@ if(DEFINED SKELLCORE_PATH AND EXISTS "${SKELLCORE_PATH}/SkellCore/CMakeLists.txt
 else()
     include(FetchContent)
     FetchContent_Declare(SkellCoreRepo
-        GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
+        GIT_REPOSITORY https://github.com/skellyruno/skellcore-vst-template.git
         GIT_TAG 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d
         GIT_SHALLOW FALSE)
     FetchContent_GetProperties(SkellCoreRepo)
