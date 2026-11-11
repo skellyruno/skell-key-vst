@@ -100,6 +100,8 @@ used only if no reliable current or saved measurement exists.
 SkellyTune Mini, let Skell Key detect a key, and click **SEND TO TUNE**. SkellyTune Mini
 automatically connects to the hub and updates its existing Key, Scale, and A4 parameters;
 there is no JOIN or FOLLOW control in Mini. Click SEND TO TUNE again to stop sharing.
+The connection stays enabled through silence and switching from file to live input;
+if the key is still being detected, the button shows **WAITING FOR KEY**.
 If the hub is unavailable, Skell Key displays **WAITING FOR HUB**, and Mini continues using
 its current tuning until a valid authenticated Skell Key packet arrives. The sender never
 writes to the clipboard or injects scale MIDI as a side effect of this button.
