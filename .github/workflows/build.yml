@@ -2,14 +2,19 @@ name: Build Skell Key Windows VST3
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-vst3:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configure CMake (JUCE fetched automatically)
         run: cmake -S . -B build -A x64 -DSKELL_KEY_BUILD_SYNC_TESTS=ON
@@ -23,13 +28,15 @@ jobs:
       - name: Package VST3
         shell: pwsh
         run: |
-          $plugin = Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' | Select-Object -First 1
-          if (-not $plugin) { throw 'No VST3 bundle was produced' }
-          Compress-Archive -Path $plugin.FullName -DestinationPath Skell-Key-Windows-VST3.zip
+          $plugins = @(Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' |
+              Where-Object { $_.Name -eq 'Skell Key.vst3' })
+          if ($plugins.Count -ne 1) { throw "Expected one Skell Key VST3, found $($plugins.Count)" }
+          Compress-Archive -LiteralPath $plugins[0].FullName -DestinationPath Skell-Key-Windows-VST3.zip -Force
 
       - name: Upload VST3 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Skell-Key-Windows-VST3
           path: Skell-Key-Windows-VST3.zip
           if-no-files-found: error
+          retention-days: 7
