@@ -3,6 +3,7 @@
 #include "TempoEvidenceGate.h"
 #include "PluginProcessor.h"
 #include "KeySilenceGate.h"
+#include "TonalWindow.h"
 #include "KeyCandidateScore.h"
 #include "PluginEditor.h"
 #include "StereoAnalysisMix.h"
@@ -910,13 +911,11 @@ void TonicRecreationAudioProcessor::updateHarmonicMask() {
 }
 
 void TonicRecreationAudioProcessor::analyseWindow(){
-    double energy=0;
-    for(int i=0;i<N;++i){
-        const float v=history[(size_t)((historyWrite+i)&(N-1))];
-        energy+=double(v)*v;
-        fftBuffer[(size_t)i]=v*hannWindow[(size_t)i];
-    }
-    const float rms=float(std::sqrt(energy/N));
+    // DC offset is not musical pitch. Use an AC-only silence gate and feed
+    // the FFT a mean-removed window to avoid false keys from constant files.
+    // This runs on the analysis worker; input/output audio remains untouched.
+    const float rms=skell::prepareTonalWindow(history,
+        static_cast<std::size_t>(historyWrite), hannWindow, fftBuffer.data());
     const float gate=state.getRawParameterValue("sensitivity")->load();
     if(rms<gate){
         // File analysis: a silent intro/outro must not erase the result already found.
