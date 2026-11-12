@@ -1,6 +1,9 @@
 // Portable JUCE-free regression tests for constant DC and DC-biased music.
 #include "../Source/TonalWindow.h"
 #include <array>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <algorithm>
 #include <cmath>
