@@ -84,6 +84,14 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 - Robustness pass: NaN/inf samples are zeroed before analysis; a file that fails to decode now clears the previous file's key/tempo instead of leaving them on screen.
 - Key: parallel-mode tie-break for bass-driven material (major vs same-root minor when the third is ambiguous). Scored on 67 GiantSteps+ EDM excerpts: 41 -> 49 exact; older real-composition and synthetic sets unchanged.
 
+### Post-V56 accuracy hardening: DC-only files
+
+- Tonal-analysis FFT windows now subtract the mean (DC component), and the key silence gate uses AC RMS instead of total RMS. Pure DC and DC-heavy noise floors no longer masquerade as pitched input in the key analyzer.
+- No changes to the audio playback path, tempo analysis, MIDI routing, UI/Bone skin, or SkellCore key/scale/A4 sync.
+- A new JUCE-free regression test checks constant DC, a musical tone with a large DC offset (same de-meaned spectrum), a near-DC signal, and the non-zero circular history write position. It runs in the Windows VST3 CI test step.
+- This is a correctness fix, **not a demonstrated increase in GiantSteps accuracy**. Preserve the reported 49/67, 118/150 and 225/288 baselines pending fresh audio corpus testing. No scoring or tempo thresholds were adjusted.
+
+
 
 ## V56 SkellCore inter-plugin key, scale & A4 sync
 
