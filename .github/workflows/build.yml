@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-vst3:
@@ -31,7 +31,47 @@ jobs:
           $plugins = @(Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' |
               Where-Object { $_.Name -eq 'Skell Key.vst3' })
           if ($plugins.Count -ne 1) { throw "Expected one Skell Key VST3, found $($plugins.Count)" }
-          Compress-Archive -LiteralPath $plugins[0].FullName -DestinationPath Skell-Key-Windows-VST3.zip -Force
+          $bundle = $plugins[0]
+          $binary = Join-Path $bundle.FullName 'Contents/x86_64-win/Skell Key.vst3'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "Missing expected Windows x64 VST3 binary: $binary"
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($binary)
+          if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "VST3 binary is not a valid MZ executable"
+          }
+          $offset = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ($offset -lt 0 -or ($offset + 26) -gt $bytes.Length) {
+            throw "Invalid PE header offset"
+          }
+          if ([Text.Encoding]::ASCII.GetString($bytes, $offset, 4) -ne "PE`0`0") {
+            throw "Missing PE signature"
+          }
+          if ([BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) {
+            throw "VST3 binary is not x64"
+          }
+          if ([BitConverter]::ToUInt16($bytes, $offset + 24) -ne 0x20B) {
+            throw "VST3 binary is not PE32+"
+          }
+          Get-FileHash -LiteralPath $binary -Algorithm SHA256 | Format-List
+          Compress-Archive -LiteralPath $bundle.FullName -DestinationPath Skell-Key-Windows-VST3.zip -Force
+          if (-not (Test-Path -LiteralPath Skell-Key-Windows-VST3.zip -PathType Leaf)) {
+            throw "VST3 ZIP was not created"
+          }
+          Add-Type -AssemblyName System.IO.Compression
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path Skell-Key-Windows-VST3.zip).Path)
+          try {
+            $names = @($zip.Entries | ForEach-Object FullName)
+            if (@($names | Where-Object { $_ -eq 'Skell Key.vst3/Contents/x86_64-win/Skell Key.vst3' }).Count -ne 1) {
+              throw "Archive is missing the expected VST3 binary"
+            }
+            if (@($names | Select-Object -Unique).Count -ne $names.Count) {
+              throw "Archive contains duplicate paths"
+            }
+          } finally {
+            $zip.Dispose()
+          }
+          Get-FileHash -LiteralPath Skell-Key-Windows-VST3.zip -Algorithm SHA256 | Format-List
 
       - name: Upload VST3 artifact
         uses: actions/upload-artifact@v6
