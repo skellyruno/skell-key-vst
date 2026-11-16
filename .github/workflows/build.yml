@@ -27,6 +27,8 @@ jobs:
 
       - name: Stage one-level Windows VST3 bundle and provenance
         shell: pwsh
+        env:
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $plugins = @(Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' |
               Where-Object { $_.Name -eq 'Skell Key.vst3' })
@@ -95,7 +97,9 @@ jobs:
             "Version: $version"
             'Format: VST3'
             'Platform: Windows x86_64'
-            "Source commit: $env:GITHUB_SHA"
+            "Source head commit: $env:SOURCE_HEAD_SHA"
+            "Tested workflow commit: $env:GITHUB_SHA"
+            "Workflow run ID: $env:GITHUB_RUN_ID"
             'Bundle: Skell Key.vst3'
             'Binary: Contents/x86_64-win/Skell Key.vst3'
             "Binary SHA-256: $binaryHash"
