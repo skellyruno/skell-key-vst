@@ -109,6 +109,44 @@ jobs:
           Write-Host "Product version: $version"
           Write-Host "Binary SHA-256: $binaryHash"
 
+      - name: Install pinned pluginval 1.0.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip'
+          Invoke-WebRequest -Uri $url -OutFile pluginval_Windows.zip
+          Expand-Archive -LiteralPath pluginval_Windows.zip -DestinationPath pluginval -Force
+          $validator = Get-ChildItem -LiteralPath pluginval -Recurse -File -Filter 'pluginval.exe' |
+            Select-Object -First 1
+          if (-not $validator) { throw 'Official pluginval 1.0.4 Windows executable was not found' }
+          "PLUGINVAL_EXE=$($validator.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate staged Skell Key VST3 (strictness 5)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path (Join-Path $PWD 'release-stage') 'Skell Key.vst3'
+          if (-not (Test-Path -LiteralPath $bundle -PathType Container)) {
+            throw "Staged VST3 bundle missing: $bundle"
+          }
+          $reportDir = Join-Path $PWD 'pluginval-reports'
+          New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+          & "$env:PLUGINVAL_EXE" --strictness-level 5 --validate-in-process --output-dir "$reportDir" "$bundle"
+          $validationExitCode = $LASTEXITCODE
+          if ($validationExitCode -ne 0) {
+            throw "pluginval strictness 5 failed with exit code $validationExitCode"
+          }
+
+      - name: Upload pluginval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-pluginval-report
+          path: pluginval-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload one-level installable VST3 bundle
         uses: actions/upload-artifact@v6
         with:
