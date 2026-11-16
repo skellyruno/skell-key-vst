@@ -25,17 +25,23 @@ jobs:
       - name: Run tuning sync tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Package VST3
+      - name: Stage one-level Windows VST3 bundle and provenance
         shell: pwsh
         run: |
           $plugins = @(Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' |
               Where-Object { $_.Name -eq 'Skell Key.vst3' })
           if ($plugins.Count -ne 1) { throw "Expected one Skell Key VST3, found $($plugins.Count)" }
+
           $bundle = $plugins[0]
           $binary = Join-Path $bundle.FullName 'Contents/x86_64-win/Skell Key.vst3'
+          $moduleInfo = Join-Path $bundle.FullName 'Contents/Resources/moduleinfo.json'
           if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw "Missing expected Windows x64 VST3 binary: $binary"
           }
+          if (-not (Test-Path -LiteralPath $moduleInfo -PathType Leaf)) {
+            throw "Missing VST3 moduleinfo.json: $moduleInfo"
+          }
+
           $bytes = [System.IO.File]::ReadAllBytes($binary)
           if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
             throw "VST3 binary is not a valid MZ executable"
@@ -53,30 +59,56 @@ jobs:
           if ([BitConverter]::ToUInt16($bytes, $offset + 24) -ne 0x20B) {
             throw "VST3 binary is not PE32+"
           }
-          Get-FileHash -LiteralPath $binary -Algorithm SHA256 | Format-List
-          Compress-Archive -LiteralPath $bundle.FullName -DestinationPath Skell-Key-Windows-VST3.zip -Force
-          if (-not (Test-Path -LiteralPath Skell-Key-Windows-VST3.zip -PathType Leaf)) {
-            throw "VST3 ZIP was not created"
-          }
-          Add-Type -AssemblyName System.IO.Compression
-          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path Skell-Key-Windows-VST3.zip).Path)
-          try {
-            $names = @($zip.Entries | ForEach-Object FullName)
-            if (@($names | Where-Object { $_ -eq 'Skell Key.vst3/Contents/x86_64-win/Skell Key.vst3' }).Count -ne 1) {
-              throw "Archive is missing the expected VST3 binary"
-            }
-            if (@($names | Select-Object -Unique).Count -ne $names.Count) {
-              throw "Archive contains duplicate paths"
-            }
-          } finally {
-            $zip.Dispose()
-          }
-          Get-FileHash -LiteralPath Skell-Key-Windows-VST3.zip -Algorithm SHA256 | Format-List
 
-      - name: Upload VST3 artifact
+          $moduleInfoText = Get-Content -LiteralPath $moduleInfo -Raw
+          if ($moduleInfoText -notmatch '"Name"\s*:\s*"Skell Key"') {
+            throw "VST3 module metadata does not identify Skell Key"
+          }
+          $versionMatch = [regex]::Match($moduleInfoText, '"Version"\s*:\s*"([^"]+)"')
+          if (-not $versionMatch.Success) {
+            throw "VST3 module metadata has no product version"
+          }
+          $version = $versionMatch.Groups[1].Value
+          $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $stage = Join-Path $PWD 'release-stage'
+          if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          $stagedBundle = Join-Path $stage $bundle.Name
+          Copy-Item -LiteralPath $bundle.FullName -Destination $stagedBundle -Recurse
+
+          $stagedBinary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Key.vst3'
+          if (-not (Test-Path -LiteralPath $stagedBinary -PathType Leaf)) {
+            throw "Staged VST3 binary is missing"
+          }
+          $stagedBinaries = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.vst3')
+          if ($stagedBinaries.Count -ne 1 -or $stagedBinaries[0].FullName -ne $stagedBinary) {
+            throw "Staged package must contain exactly one Windows VST3 binary"
+          }
+
+          "$binaryHash  Skell Key.vst3/Contents/x86_64-win/Skell Key.vst3" |
+            Set-Content -LiteralPath (Join-Path $stage 'Skell-Key-Windows-VST3.sha256') -Encoding ascii
+          @(
+            'Product: Skell Key'
+            "Version: $version"
+            'Format: VST3'
+            'Platform: Windows x86_64'
+            "Source commit: $env:GITHUB_SHA"
+            'Bundle: Skell Key.vst3'
+            'Binary: Contents/x86_64-win/Skell Key.vst3'
+            "Binary SHA-256: $binaryHash"
+          ) | Set-Content -LiteralPath (Join-Path $stage 'Skell-Key-Windows-VST3-manifest.txt') -Encoding utf8
+
+          Write-Host "Staged bundle: $stagedBundle"
+          Write-Host "Product version: $version"
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Upload one-level installable VST3 bundle
         uses: actions/upload-artifact@v6
         with:
           name: Skell-Key-Windows-VST3
-          path: Skell-Key-Windows-VST3.zip
+          path: release-stage/**
           if-no-files-found: error
           retention-days: 7
