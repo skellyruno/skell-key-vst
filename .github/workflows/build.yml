@@ -132,10 +132,69 @@ jobs:
           }
           $reportDir = Join-Path $PWD 'pluginval-reports'
           New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-          & "$env:PLUGINVAL_EXE" --strictness-level 5 --validate-in-process --output-dir "$reportDir" "$bundle"
-          $validationExitCode = $LASTEXITCODE
-          if ($validationExitCode -ne 0) {
-            throw "pluginval strictness 5 failed with exit code $validationExitCode"
+          # pluginval 1.0.4 is a Windows GUI-subsystem executable. Invoke it
+          # through Start-Process so PowerShell receives the real process exit
+          # code instead of an empty $LASTEXITCODE (which falsely fails a
+          # successful validation on Windows runners).
+          $stdoutPath = Join-Path $reportDir 'pluginval.stdout.log'
+          $stderrPath = Join-Path $reportDir 'pluginval.stderr.log'
+          $argumentLine = '--strictness-level 5 --validate-in-process --output-dir "{0}" "{1}"' -f $reportDir, $bundle
+          $process = Start-Process -FilePath $env:PLUGINVAL_EXE -ArgumentList $argumentLine -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+          if (Test-Path -LiteralPath $stdoutPath) {
+            Get-Content -LiteralPath $stdoutPath | ForEach-Object { Write-Host $_ }
+          }
+          if (Test-Path -LiteralPath $stderrPath) {
+            Get-Content -LiteralPath $stderrPath | ForEach-Object { Write-Host $_ }
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "pluginval strictness 5 failed with process exit code $($process.ExitCode)"
+          }
+
+          $reports = @(Get-ChildItem -LiteralPath $reportDir -File -Filter '*.txt')
+          if ($reports.Count -ne 1) {
+            throw "Expected exactly one pluginval text report, found $($reports.Count)"
+          }
+          $reportText = Get-Content -LiteralPath $reports[0].FullName -Raw
+          if ($reportText -notmatch '(?m)^SUCCESS\s*
+
+      - name: Upload pluginval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-pluginval-report
+          path: pluginval-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload one-level installable VST3 bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-Windows-VST3
+          path: release-stage/**
+          if-no-files-found: error
+          retention-days: 7
+ -or $reportText -match '(?m)^FAILURE\s*
+
+      - name: Upload pluginval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-pluginval-report
+          path: pluginval-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload one-level installable VST3 bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-Windows-VST3
+          path: release-stage/**
+          if-no-files-found: error
+          retention-days: 7
+) {
+            throw "pluginval report does not contain a clean final SUCCESS marker"
           }
 
       - name: Upload pluginval report
