@@ -157,43 +157,8 @@ jobs:
             throw "Expected exactly one pluginval text report, found $($reports.Count)"
           }
           $reportText = Get-Content -LiteralPath $reports[0].FullName -Raw
-          if ($reportText -notmatch '(?m)^SUCCESS\s*
-
-      - name: Upload pluginval report
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: Skell-Key-pluginval-report
-          path: pluginval-reports/
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload one-level installable VST3 bundle
-        uses: actions/upload-artifact@v6
-        with:
-          name: Skell-Key-Windows-VST3
-          path: release-stage/**
-          if-no-files-found: error
-          retention-days: 7
- -or $reportText -match '(?m)^FAILURE\s*
-
-      - name: Upload pluginval report
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: Skell-Key-pluginval-report
-          path: pluginval-reports/
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload one-level installable VST3 bundle
-        uses: actions/upload-artifact@v6
-        with:
-          name: Skell-Key-Windows-VST3
-          path: release-stage/**
-          if-no-files-found: error
-          retention-days: 7
-) {
+          $reportEnd = $reportText.Trim()
+          if (-not $reportEnd.EndsWith('SUCCESS') -or $reportText.Contains('FAILURE')) {
             throw "pluginval report does not contain a clean final SUCCESS marker"
           }
 
