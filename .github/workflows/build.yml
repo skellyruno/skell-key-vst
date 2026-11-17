@@ -16,6 +16,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Set up Python for release metadata checks
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Configure CMake (JUCE fetched automatically)
         run: cmake -S . -B build -A x64 -DSKELL_KEY_BUILD_SYNC_TESTS=ON
 
@@ -24,6 +29,9 @@ jobs:
 
       - name: Run tuning sync tests
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Test strict VST3 moduleinfo normalizer
+        run: python -m unittest discover -s tests -p "test_moduleinfo_normalizer.py" -v
 
       - name: Stage one-level Windows VST3 bundle and provenance
         shell: pwsh
@@ -72,14 +80,28 @@ jobs:
           }
           $version = $versionMatch.Groups[1].Value
           $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceModuleInfoHash = (Get-FileHash -LiteralPath $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $stage = Join-Path $PWD 'release-stage'
           if (Test-Path -LiteralPath $stage) {
-            Remove-Item -LiteralPath $stage -Recurse -Force
+            throw "Refusing to overwrite existing release-stage directory: $stage"
           }
           New-Item -ItemType Directory -Path $stage | Out-Null
           $stagedBundle = Join-Path $stage $bundle.Name
           Copy-Item -LiteralPath $bundle.FullName -Destination $stagedBundle -Recurse
+
+          $moduleInfoManifest = Join-Path $stage 'Skell-Key-moduleinfo-verification.json'
+          python tools/normalize_vst3_moduleinfo.py --bundle "$stagedBundle" --product "Skell Key" --vendor "Skell Audio" --manifest-out "$moduleInfoManifest"
+          if ($LASTEXITCODE -ne 0) { throw "Strict VST3 moduleinfo verification failed ($LASTEXITCODE)" }
+          $moduleInfoVerification = Get-Content -LiteralPath $moduleInfoManifest -Raw | ConvertFrom-Json
+          if ($moduleInfoVerification.source_moduleinfo_sha256 -ne $sourceModuleInfoHash) {
+            throw "Staged moduleinfo source hash does not match the original build bundle"
+          }
+          $stagedModuleInfo = Join-Path $stagedBundle 'Contents/Resources/moduleinfo.json'
+          $stagedModuleInfoHash = (Get-FileHash -LiteralPath $stagedModuleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($moduleInfoVerification.staged_moduleinfo_sha256 -ne $stagedModuleInfoHash) {
+            throw "Staged moduleinfo hash does not match its verification manifest"
+          }
 
           $stagedBinary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Key.vst3'
           if (-not (Test-Path -LiteralPath $stagedBinary -PathType Leaf)) {
@@ -103,6 +125,12 @@ jobs:
             'Bundle: Skell Key.vst3'
             'Binary: Contents/x86_64-win/Skell Key.vst3'
             "Binary SHA-256: $binaryHash"
+            "Moduleinfo source SHA-256: $sourceModuleInfoHash"
+            "Moduleinfo staged SHA-256: $stagedModuleInfoHash"
+            "Moduleinfo rewritten: $($moduleInfoVerification.rewritten)"
+            "JUCE trailing commas removed: $($moduleInfoVerification.trailing_commas_removed)"
+            "VST3 class IDs: $($moduleInfoVerification.class_ids -join ', ')"
+            "Missing contact fields: $($moduleInfoVerification.missing_contact_fields -join ', ')"
           ) | Set-Content -LiteralPath (Join-Path $stage 'Skell-Key-Windows-VST3-manifest.txt') -Encoding utf8
 
           Write-Host "Staged bundle: $stagedBundle"
@@ -177,4 +205,4 @@ jobs:
           name: Skell-Key-Windows-VST3
           path: release-stage/**
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
