@@ -108,7 +108,7 @@ class ModuleInfoNormalizerTests(unittest.TestCase):
         self.assertEqual(manifest["source_moduleinfo_sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(manifest["staged_moduleinfo_sha256"], hashlib.sha256(normalized).hexdigest())
         self.assertEqual(len(parsed["Classes"]), 2)
-        self.assertNotRegex(normalized_text, r",\s*[}\]]")
+        self.assertEqual(strict, parsed)
 
     def test_accepts_strict_json_without_trailing_commas(self):
         raw = metadata_bytes(trailing=False)
