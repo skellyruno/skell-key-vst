@@ -362,7 +362,8 @@ if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
     if (-not $proceed) {
         return [pscustomobject]@{ status = 'what-if'; version = $package.version; target = $target; backup_path = $null; binary_sha256 = $package.evidence.binary_sha256 }
     }
-    return Replace-VerifiedBundle $package.bundle $target 'pre-install-or-update'
+    $result = Replace-VerifiedBundle $package.bundle $target 'pre-install-or-update'
+    return $result
 }
 else {
     $backup = Get-VerifiedBackup $RollbackFrom
