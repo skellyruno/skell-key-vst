@@ -56,6 +56,18 @@ function Remove-SafeTestRoot($Lease) {
         Write-Warning "Leaving TestRoot in place because its ownership marker changed: $($Lease.Path)"
         return
     }
+    try {
+        $nestedReparsePoints = @(Get-ChildItem -LiteralPath $Lease.Path -Recurse -Force -ErrorAction Stop |
+            Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 })
+    }
+    catch {
+        Write-Warning "Leaving TestRoot in place because its contents could not be checked safely: $($Lease.Path)"
+        return
+    }
+    if ($nestedReparsePoints.Count -gt 0) {
+        Write-Warning "Leaving TestRoot in place because it contains a reparse point: $($nestedReparsePoints[0].FullName)"
+        return
+    }
 
     Remove-Item -LiteralPath $Lease.MarkerPath -Force
     Remove-Item -LiteralPath $Lease.Path -Recurse -Force
