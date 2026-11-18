@@ -17,6 +17,12 @@ function AssertThrows([scriptblock]$Action, [string]$Message) {
     try { & $Action | Out-Null } catch { $didThrow = $true }
     if (-not $didThrow) { throw $Message }
 }
+function CopyTree([string]$Source, [string]$Destination) {
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
+        Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
+    }
+}
 function WriteJson([string]$Path, [object]$Value) {
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 }
@@ -64,7 +70,7 @@ try {
     Assert ($null -eq $same.backup_path) 'Idempotent install unexpectedly returned a backup.'
 
     $upgradeRoot = Join-Path $TestRoot 'UpgradePackage'
-    Copy-Item -LiteralPath $root -Destination $upgradeRoot -Recurse
+    CopyTree $root $upgradeRoot
     $moduleInfoPath = Join-Path $upgradeRoot 'Skell Key.vst3\Contents\Resources\moduleinfo.json'
     $info = [System.IO.File]::ReadAllText($moduleInfoPath) | ConvertFrom-Json
     $info.Version = '0.1.1'
@@ -99,7 +105,7 @@ try {
     Assert (Test-Path -LiteralPath (Join-Path $updated.backup_path 'Skell Key.vst3')) 'Backup bundle is missing.'
 
     $badBackup = Join-Path $TestRoot 'TamperedBackup'
-    Copy-Item -LiteralPath $updated.backup_path -Destination $badBackup -Recurse
+    CopyTree $updated.backup_path $badBackup
     Add-Content -LiteralPath (Join-Path $badBackup 'Skell Key.vst3\Contents\Resources\moduleinfo.json') -Value 'tampered'
     AssertThrows {
         & $installer -RollbackFrom $badBackup -Vst3Directory $targetRoot -BackupRoot $backupRoot -Confirm:$false
@@ -110,7 +116,7 @@ try {
     Assert (-not [string]::IsNullOrWhiteSpace([string]$rollback.backup_path)) 'Rollback did not preserve the replaced version.'
 
     $tamperedPackage = Join-Path $TestRoot 'TamperedPackage'
-    Copy-Item -LiteralPath $root -Destination $tamperedPackage -Recurse
+    CopyTree $root $tamperedPackage
     Add-Content -LiteralPath (Join-Path $tamperedPackage 'PREVIEW-ONLY.txt') -Value 'tampered'
     $tamperedTarget = Join-Path $TestRoot 'TamperedInstall\VST3'
     AssertThrows {
