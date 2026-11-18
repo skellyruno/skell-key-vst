@@ -1,0 +1,46 @@
+SKELL KEY 0.1.0 — WINDOWS VST3 PRIVATE PREVIEW
+================================================
+Windows x64 VST3 only. This is a private preview package, not a signed installer
+or commercial release. Use a disposable DAW project for first host testing.
+
+DEFAULT PER-USER INSTALL
+%LOCALAPPDATA%\Programs\Common\VST3\Skell Key.vst3
+
+REQUIREMENTS
+- Windows 10/11 x64.
+- PowerShell 7.
+- No administrator rights are required.
+- No registry edits, background updater, DAW restart or automatic scan is performed.
+
+INSTALL / UPDATE
+1. Extract the complete artifact ZIP into a normal folder.
+2. Open PowerShell 7 in that folder.
+3. Preview all checks and the destination first:
+     .\Install-Skell-Key.ps1 -PackageRoot . -WhatIf
+4. If the preview is correct, run:
+     .\Install-Skell-Key.ps1 -PackageRoot .
+5. Approve the confirmation prompt. If an older valid Skell Key bundle exists,
+   it is copied to the backup directory and verified before replacement.
+6. Keep the backup_path returned by the installer.
+7. Restart/rescan the DAW manually and test in a disposable project.
+
+ROLLBACK
+Use the exact backup_path printed by the installer:
+     .\Install-Skell-Key.ps1 -RollbackFrom "C:\path\to\Skell-Key-backup"
+
+The helper validates both checksum manifests, every listed file, product/vendor
+and version, both VST3 class IDs, strict moduleinfo metadata, AMD64 PE32+
+architecture, bundle-tree hashes and backup integrity. It refuses tampered
+packages, unsafe manifest paths, duplicate entries, reparse points, or an
+existing target that is not a valid Skell Key bundle. It stages and verifies
+the new bundle before replacing the existing one, and restores the previous
+directory if the move or post-install check fails.
+
+The helper does not change plugin parameters, presets, state, automation IDs,
+host projects or registry entries. It never deletes a verified backup.
+
+PREVIEW LIMITATIONS
+FL Studio scan/load, Skell Key ↔ SkellyTune Mini synchronization in a real
+session, automation/state/project recall, musical A/B, target-hardware CPU and
+latency, commercial licensing, vendor URL and support email remain unverified
+or owner-controlled. Do not treat CI success as host acceptance.

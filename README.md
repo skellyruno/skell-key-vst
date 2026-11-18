@@ -132,9 +132,16 @@ peer. The `musical.key` legacy topic carries root/mode only; the `musical.tuning
 carries an absolute pitch-class mask and A4 as integer millihertz.
 
 **Offline validation:** Set `SKELL_KEY_BUILD_SYNC_TESTS=ON` when configuring and run CTest.
-Builds pin SkellCore to immutable commit `568a17fd1956065f06d20813f5e57c3621c1cac9`.
+Builds pin SkellCore to immutable commit `4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d`.
 
 
 ## Windows VST3 release metadata gate
 
 The Windows preview workflow copies the built `Skell Key.vst3` into a fresh staging directory, then validates and normalizes only the staged `Contents/Resources/moduleinfo.json`. It checks the product/vendor/version, both processor and controller classes, unique 32-hex VST3 class IDs, strict JSON syntax, and records the original/staged metadata SHA-256 values. The original build-tree bundle and VST3 binary are not modified. The workflow refuses to overwrite an existing staging directory and retains preview artifacts for 30 days. Blank factory URL/email and the missing product/source license remain commercial-release blockers; this metadata gate does not grant a license or certify FL Studio compatibility.
+
+
+## Windows VST3 private-preview install / update / rollback
+
+The Windows artifact includes Install-Skell-Key.ps1, INSTALL-WINDOWS.txt, RELEASE-NOTES.txt, THIRD-PARTY-NOTICES.txt, and two SHA-256 manifests. Extract the complete artifact ZIP, use PowerShell 7, and run the installer with -WhatIf first. It installs per-user by default, verifies bundle and package checksums, and preserves a verified backup before updating an existing valid Skell Key bundle. Rollback uses the exact backup path returned by the installer. It does not require administrator rights or modify the registry.
+
+This remains a private preview. FL Studio, two-plugin synchronization, real musical A/B, commercial licensing, vendor URL and support contact are not yet accepted. The actual CMake SkellCore pin is 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d; this corrects the older documentation value.

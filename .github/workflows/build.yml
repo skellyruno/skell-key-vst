@@ -137,6 +137,62 @@ jobs:
           Write-Host "Product version: $version"
           Write-Host "Binary SHA-256: $binaryHash"
 
+      - name: Assemble checksummed private-preview install package
+        shell: pwsh
+        env:
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $PWD 'release-stage'
+          $moduleInfo = Join-Path $stage 'Skell Key.vst3/Contents/Resources/moduleinfo.json'
+          $info = Get-Content -LiteralPath $moduleInfo -Raw | ConvertFrom-Json
+          $buildInfo = [ordered]@{
+            schema_version = 1
+            product = 'Skell Key'
+            version = [string]$info.Version
+            format = 'VST3'
+            platform = 'Windows x86_64'
+            release_status = 'preview-only; not a commercial release'
+            source_head_sha = $env:SOURCE_HEAD_SHA
+            tested_workflow_sha = $env:GITHUB_SHA
+            workflow_run_id = $env:GITHUB_RUN_ID
+          }
+          $buildInfo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'build-info.json') -Encoding utf8
+          @(
+            'release_status: preview-only; not a commercial release.'
+            'Windows x64 VST3 only. Not signed; no administrator rights required.'
+            'Run Install-Skell-Key.ps1 with -WhatIf before installing.'
+            'See INSTALL-WINDOWS.txt and THIRD-PARTY-NOTICES.txt.'
+          ) | Set-Content -LiteralPath (Join-Path $stage 'PREVIEW-ONLY.txt') -Encoding ascii
+          Copy-Item -LiteralPath 'Install-Skell-Key.ps1' -Destination $stage
+          Copy-Item -LiteralPath 'INSTALL-WINDOWS.txt' -Destination $stage
+          Copy-Item -LiteralPath 'RELEASE-NOTES.txt' -Destination $stage
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.txt' -Destination $stage
+
+          $toolFiles = @('Install-Skell-Key.ps1','INSTALL-WINDOWS.txt','THIRD-PARTY-NOTICES.txt')
+          $excluded = @('SHA256SUMS.txt','TOOLS-SHA256SUMS.txt') + $toolFiles
+          $distRoot = (Resolve-Path -LiteralPath $stage).Path
+          $mainSums = foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File -Force | Sort-Object FullName) {
+            $relative = $file.FullName.Substring($distRoot.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+            if ($relative -notin $excluded) {
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            }
+          }
+          $mainSums | Set-Content -LiteralPath (Join-Path $stage 'SHA256SUMS.txt') -Encoding ascii
+
+          $toolSums = foreach ($relative in $toolFiles) {
+            $path = Join-Path $stage $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing preview tool: $relative" }
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $relative"
+          }
+          $toolSums | Set-Content -LiteralPath (Join-Path $stage 'TOOLS-SHA256SUMS.txt') -Encoding ascii
+
+      - name: Test private-preview install, update and rollback
+        shell: pwsh
+        run: ./scripts/Test-Install-Skell-Key.ps1 -PackageRoot release-stage -TestRoot "$env:RUNNER_TEMP/Skell-Key-Install-Test"
+
       - name: Install pinned pluginval 1.0.4
         shell: pwsh
         run: |
