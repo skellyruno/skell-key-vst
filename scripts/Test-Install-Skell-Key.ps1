@@ -7,6 +7,61 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:assertions = 0
 
+function New-SafeTestRoot([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'TestRoot must be a non-empty path.' }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    $trimmedPath = $fullPath.TrimEnd([char[]]@('\', '/'))
+    $trimmedRoot = $pathRoot.TrimEnd([char[]]@('\', '/'))
+    if ([string]::Equals($trimmedPath, $trimmedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to use a filesystem root as TestRoot: $fullPath"
+    }
+    if (Test-Path -LiteralPath $fullPath) {
+        throw "Refusing to use an existing TestRoot; choose a new, unused directory: $fullPath"
+    }
+
+    $parent = Split-Path -Parent $fullPath
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw "TestRoot has no parent directory: $fullPath" }
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    New-Item -ItemType Directory -Path $fullPath -ErrorAction Stop | Out-Null
+
+    $token = [Guid]::NewGuid().ToString('N')
+    $markerPath = Join-Path $fullPath ('.skell-key-test-root-' + $token)
+    [System.IO.File]::WriteAllText($markerPath, $token, [System.Text.UTF8Encoding]::new($false))
+    [pscustomobject]@{ Path = $fullPath; MarkerPath = $markerPath; Token = $token }
+}
+
+function Remove-SafeTestRoot($Lease) {
+    if ($null -eq $Lease) { return }
+    if (-not (Test-Path -LiteralPath $Lease.Path -PathType Container)) { return }
+
+    $rootItem = Get-Item -LiteralPath $Lease.Path -Force
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Warning "Leaving TestRoot in place because it became a reparse point: $($Lease.Path)"
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Lease.MarkerPath -PathType Leaf)) {
+        Write-Warning "Leaving TestRoot in place because its ownership marker is missing: $($Lease.Path)"
+        return
+    }
+    $markerItem = Get-Item -LiteralPath $Lease.MarkerPath -Force
+    if (($markerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Warning "Leaving TestRoot in place because its ownership marker is a reparse point: $($Lease.Path)"
+        return
+    }
+    $actualToken = [System.IO.File]::ReadAllText($Lease.MarkerPath)
+    if ($actualToken -cne $Lease.Token) {
+        Write-Warning "Leaving TestRoot in place because its ownership marker changed: $($Lease.Path)"
+        return
+    }
+
+    Remove-Item -LiteralPath $Lease.MarkerPath -Force
+    Remove-Item -LiteralPath $Lease.Path -Recurse -Force
+}
+
+
 function Assert([bool]$Condition, [string]$Message) {
     $script:assertions++
     if (-not $Condition) { throw $Message }
@@ -47,8 +102,25 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -PathType Le
     throw 'Package checksum manifests are missing.'
 }
 
-New-Item -ItemType Directory -Path $TestRoot -Force | Out-Null
+$testRootLease = New-SafeTestRoot $TestRoot
+$TestRoot = $testRootLease.Path
 try {
+    # Existing paths must never be claimed for recursive test cleanup.
+    $existingTestRoot = Join-Path $TestRoot 'ExistingRootMustRemain'
+    New-Item -ItemType Directory -Path $existingTestRoot | Out-Null
+    $existingSentinel = Join-Path $existingTestRoot 'sentinel.txt'
+    [System.IO.File]::WriteAllText($existingSentinel, 'preserve existing user data')
+    AssertThrows { New-SafeTestRoot $existingTestRoot | Out-Null } 'An existing TestRoot was accepted.'
+    Assert ((Get-Content -LiteralPath $existingSentinel -Raw) -eq 'preserve existing user data') 'Existing TestRoot data was modified.'
+
+    # Cleanup must also refuse a directory whose ownership marker no longer matches.
+    $protectedLease = New-SafeTestRoot (Join-Path $TestRoot 'CleanupGuard')
+    $protectedSentinel = Join-Path $protectedLease.Path 'sentinel.txt'
+    [System.IO.File]::WriteAllText($protectedSentinel, 'preserve when ownership is uncertain')
+    [System.IO.File]::WriteAllText($protectedLease.MarkerPath, 'wrong-token')
+    Remove-SafeTestRoot $protectedLease
+    Assert (Test-Path -LiteralPath $protectedSentinel -PathType Leaf) 'Cleanup removed a directory without a valid ownership marker.'
+    Remove-Item -LiteralPath $protectedLease.Path -Recurse -Force
     $whatIfTarget = Join-Path $TestRoot 'WhatIf\VST3'
     $whatIfBackups = Join-Path $TestRoot 'WhatIf\Backups'
     $dry = & $installer -PackageRoot $root -Vst3Directory $whatIfTarget -BackupRoot $whatIfBackups -WhatIf
@@ -137,7 +209,5 @@ try {
     Write-Host "Skell Key preview install/update/rollback tests: $script:assertions assertions passed."
 }
 finally {
-    if (Test-Path -LiteralPath $TestRoot) {
-        Remove-Item -LiteralPath $TestRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    Remove-SafeTestRoot $testRootLease
 }
