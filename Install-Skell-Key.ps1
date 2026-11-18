@@ -82,7 +82,7 @@ function Read-ChecksumManifest([string]$Root, [string]$Name) {
         $paths.Add($relative.Replace('\', '/'))
     }
     if ($paths.Count -eq 0) { throw "$Name is empty." }
-    return ,$paths.ToArray()
+    return $paths.ToArray()
 }
 
 function Get-BundleEvidence([string]$Bundle) {
