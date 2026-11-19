@@ -26,11 +26,41 @@ function Get-FullPath([string]$Path) {
     [System.IO.Path]::GetFullPath($Path)
 }
 
+function Assert-NotReparsePoint([string]$Path, [string]$Description) {
+    $fullPath = Get-FullPath $Path
+    $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw ('Reparse point rejected for ' + $Description + ': ' + $fullPath)
+    }
+}
+
+function Assert-NoReparsePoints([string]$Directory, [string]$Description) {
+    $root = Get-FullPath $Directory
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw ('Missing ' + $Description + ' directory: ' + $root)
+    }
+    Assert-NotReparsePoint $root $Description
+    # Walk one directory at a time; reject a junction/symlink before descending.
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($root)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw ('Reparse point rejected in ' + $Description + ': ' + $item.FullName)
+            }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+        }
+    }
+}
+
 function Get-TreeHash([string]$Directory) {
     $root = Get-FullPath $Directory
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
         throw "Missing bundle directory: $root"
     }
+    Assert-NoReparsePoints $root 'VST3 bundle'
     $items = @(Get-ChildItem -LiteralPath $root -Recurse -Force)
     foreach ($item in $items) {
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -87,6 +117,7 @@ function Read-ChecksumManifest([string]$Root, [string]$Name) {
 
 function Get-BundleEvidence([string]$Bundle) {
     $root = Get-FullPath $Bundle
+    Assert-NotReparsePoint $root 'VST3 bundle root'
     $infoPath = Join-Path $root 'Contents\Resources\moduleinfo.json'
     $modulePath = Join-Path $root $BinaryRelative
     $contentsPath = Join-Path $root 'Contents'
@@ -139,6 +170,7 @@ function Get-BundleEvidence([string]$Bundle) {
 
 function Get-VerifiedPackage([string]$Root) {
     $rootPath = Get-FullPath $Root
+    Assert-NoReparsePoints $rootPath 'package'
     $buildInfoPath = Join-Path $rootPath 'build-info.json'
     if (-not (Test-Path -LiteralPath $buildInfoPath -PathType Leaf)) { throw 'Missing build-info.json.' }
     $build = [System.IO.File]::ReadAllText($buildInfoPath) | ConvertFrom-Json -ErrorAction Stop
@@ -240,6 +272,7 @@ function Get-VerifiedPackage([string]$Root) {
 
 function Get-VerifiedBackup([string]$BackupPath) {
     $root = Get-FullPath $BackupPath
+    Assert-NoReparsePoints $root 'backup'
     $manifestPath = Join-Path $root 'backup-manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Backup manifest is missing.' }
     $manifest = [System.IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json -ErrorAction Stop
@@ -258,6 +291,7 @@ function New-VerifiedBackup([string]$Bundle, [string]$Reason, [string]$OriginalT
     $evidence = Get-BundleEvidence $Bundle
     $backupRoot = Get-FullPath $BackupRoot
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+    Assert-NotReparsePoint $backupRoot 'backup destination root'
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $path = Join-Path $backupRoot ("Skell-Key-" + $evidence.version + "-" + $stamp + "-" + $suffix)
@@ -302,6 +336,7 @@ function Replace-VerifiedBundle([string]$Source, [string]$Target, [string]$Reaso
     }
 
     New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+    Assert-NotReparsePoint $targetRoot 'VST3 destination root'
     $id = [Guid]::NewGuid().ToString('N')
     $stage = Join-Path $targetRoot ('.Skell-Key-stage-' + $id + '.vst3')
     $previous = Join-Path $targetRoot ('.Skell-Key-previous-' + $id + '.vst3')
@@ -351,6 +386,7 @@ function Replace-VerifiedBundle([string]$Source, [string]$Target, [string]$Reaso
 if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
     $package = Get-VerifiedPackage $PackageRoot
     $targetRoot = Get-FullPath $Vst3Directory
+    Assert-NotReparsePoint $targetRoot 'VST3 destination root'
     $target = Join-Path $targetRoot $BundleName
     if (Test-Path -LiteralPath $target -PathType Container) {
         $current = Get-BundleEvidence $target
@@ -368,6 +404,7 @@ if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
 else {
     $backup = Get-VerifiedBackup $RollbackFrom
     $targetRoot = Get-FullPath $Vst3Directory
+    Assert-NotReparsePoint $targetRoot 'VST3 destination root'
     $target = Join-Path $targetRoot $BundleName
     if (Test-Path -LiteralPath $target -PathType Container) {
         $current = Get-BundleEvidence $target

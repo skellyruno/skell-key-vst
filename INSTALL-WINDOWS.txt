@@ -31,8 +31,9 @@ Use the exact backup_path printed by the installer:
 The helper validates both checksum manifests, every listed file, product/vendor
 and version, both VST3 class IDs, strict moduleinfo metadata, AMD64 PE32+
 architecture, bundle-tree hashes and backup integrity. It refuses tampered
-packages, unsafe manifest paths, duplicate entries, reparse points, or an
-existing target that is not a valid Skell Key bundle. It stages and verifies
+packages, unsafe manifest paths, duplicate entries, reparse points (including
+package, backup, bundle and destination roots), or an existing target that is
+not a valid Skell Key bundle. Extract packages into a normal, non-junction folder. It stages and verifies
 the new bundle before replacing the existing one, and restores the previous
 directory if the move or post-install check fails.
 

@@ -90,6 +90,24 @@ function CopyTree([string]$Source, [string]$Destination) {
         Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
     }
 }
+function New-TestJunction([string]$Path, [string]$Target) {
+    if (Test-Path -LiteralPath $Path) { throw "Test junction path already exists: $Path" }
+    if (-not (Test-Path -LiteralPath $Target -PathType Container)) { throw "Test junction target is missing: $Target" }
+    New-Item -ItemType Junction -Path $Path -Target $Target -ErrorAction Stop | Out-Null
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        throw "Test path was not created as a reparse point: $Path"
+    }
+}
+function Remove-TestJunction([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        throw "Refusing to remove a non-reparse test path: $Path"
+    }
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+}
 function WriteJson([string]$Path, [object]$Value) {
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 }
@@ -116,6 +134,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -PathType Le
 
 $testRootLease = New-SafeTestRoot $TestRoot
 $TestRoot = $testRootLease.Path
+$junctionPaths = [System.Collections.Generic.List[string]]::new()
 try {
     # Existing paths must never be claimed for recursive test cleanup.
     $existingTestRoot = Join-Path $TestRoot 'ExistingRootMustRemain'
@@ -133,6 +152,51 @@ try {
     Remove-SafeTestRoot $protectedLease
     Assert (Test-Path -LiteralPath $protectedSentinel -PathType Leaf) 'Cleanup removed a directory without a valid ownership marker.'
     Remove-Item -LiteralPath $protectedLease.Path -Recurse -Force
+
+    # The package root and all nested package directories must be real paths.
+    $packageJunctionTarget = Join-Path $TestRoot 'PackageJunctionTarget'
+    CopyTree $root $packageJunctionTarget
+    $packageJunction = Join-Path $TestRoot 'PackageJunction'
+    New-TestJunction $packageJunction $packageJunctionTarget
+    $junctionPaths.Add($packageJunction)
+    $packageJunctionInstall = Join-Path $TestRoot 'PackageJunctionInstall'
+    AssertThrows {
+        & (Join-Path $packageJunction 'Install-Skell-Key.ps1') -PackageRoot $packageJunction -Vst3Directory (Join-Path $packageJunctionInstall 'VST3') -WhatIf
+    } 'Package-root junction was accepted.'
+    Assert (-not (Test-Path -LiteralPath $packageJunctionInstall)) 'Package-root junction created an install destination.'
+
+    $externalPackageData = Join-Path $TestRoot 'ExternalPackageData'
+    New-Item -ItemType Directory -Path $externalPackageData | Out-Null
+    $nestedPackageJunction = Join-Path $packageJunctionTarget 'ExternalData'
+    New-TestJunction $nestedPackageJunction $externalPackageData
+    $junctionPaths.Add($nestedPackageJunction)
+    AssertThrows {
+        & $installer -PackageRoot $packageJunctionTarget -WhatIf
+    } 'A nested package junction was accepted.'
+    Remove-TestJunction $nestedPackageJunction
+    $junctionPaths.Remove($nestedPackageJunction) | Out-Null
+
+    # Destination roots and pre-existing bundle roots must not be junctions.
+    $destinationTarget = Join-Path $TestRoot 'DestinationJunctionTarget'
+    New-Item -ItemType Directory -Path $destinationTarget | Out-Null
+    $destinationJunction = Join-Path $TestRoot 'DestinationJunction'
+    New-TestJunction $destinationJunction $destinationTarget
+    $junctionPaths.Add($destinationJunction)
+    AssertThrows {
+        & $installer -PackageRoot $root -Vst3Directory $destinationJunction -WhatIf
+    } 'A VST3 destination-root junction was accepted.'
+    Assert ((@(Get-ChildItem -LiteralPath $destinationTarget -Force)).Count -eq 0) 'Destination-root junction target was modified.'
+
+    $bundleLinkRoot = Join-Path $TestRoot 'BundleJunctionInstall\VST3'
+    New-Item -ItemType Directory -Path $bundleLinkRoot -Force | Out-Null
+    $bundleJunction = Join-Path $bundleLinkRoot 'Skell Key.vst3'
+    New-TestJunction $bundleJunction (Join-Path $root 'Skell Key.vst3')
+    $junctionPaths.Add($bundleJunction)
+    AssertThrows {
+        & $installer -PackageRoot $root -Vst3Directory $bundleLinkRoot -Confirm:$false
+    } 'A pre-existing VST3 bundle junction was accepted.'
+    Assert (Test-Path -LiteralPath $bundleJunction -PathType Container) 'Rejected bundle junction was removed or replaced.'
+
     $whatIfTarget = Join-Path $TestRoot 'WhatIf\VST3'
     $whatIfBackups = Join-Path $TestRoot 'WhatIf\Backups'
     $dry = & $installer -PackageRoot $root -Vst3Directory $whatIfTarget -BackupRoot $whatIfBackups -WhatIf
@@ -188,6 +252,14 @@ try {
     Assert (Test-Path -LiteralPath (Join-Path $updated.backup_path 'backup-manifest.json')) 'Backup manifest is missing.'
     Assert (Test-Path -LiteralPath (Join-Path $updated.backup_path 'Skell Key.vst3')) 'Backup bundle is missing.'
 
+    $backupJunction = Join-Path $TestRoot 'BackupJunction'
+    New-TestJunction $backupJunction $updated.backup_path
+    $junctionPaths.Add($backupJunction)
+    AssertThrows {
+        & $installer -RollbackFrom $backupJunction -Vst3Directory $targetRoot -BackupRoot $backupRoot -Confirm:$false
+    } 'A backup-root junction was accepted.'
+    Assert (Test-Path -LiteralPath (Join-Path $updated.backup_path 'backup-manifest.json')) 'Rejected backup junction altered the original backup.'
+
     $badBackup = Join-Path $TestRoot 'TamperedBackup'
     CopyTree $updated.backup_path $badBackup
     Add-Content -LiteralPath (Join-Path $badBackup 'Skell Key.vst3\Contents\Resources\moduleinfo.json') -Value 'tampered'
@@ -221,5 +293,9 @@ try {
     Write-Host "Skell Key preview install/update/rollback tests: $script:assertions assertions passed."
 }
 finally {
+    foreach ($junctionPath in $junctionPaths) {
+        try { Remove-TestJunction $junctionPath }
+        catch { Write-Warning ("Could not remove test junction safely: " + $junctionPath + " — " + $_.Exception.Message) }
+    }
     Remove-SafeTestRoot $testRootLease
 }
