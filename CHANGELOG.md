@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Consolidate the V54–V56 engineering handoff, accuracy baselines, SkellCore protocol, validation matrix and November 20 repository audit under docs/.
+- Consolidate the verified Windows VST3 packaging, metadata, installer/rollback and public-preview artifact policy work into one release review stack; no DSP or published parameter/state IDs changed.
 - Replace deprecated `FetchContent_Populate` usage with pinned `FetchContent_MakeAvailable(SkellCoreRepo)` and `SOURCE_SUBDIR SkellCore`; preserve the immutable SkellCore revision and remove the CMake 4.4 deprecation warning.
 - Withhold the installable Windows VST3 preview ZIP on public-repository runs while retaining build, installer and pluginval validation; add an explicit notice and workflow-contract regression tests.
 - Expose the existing single default host program as `Default` instead of returning an empty name. Add a portable regression test for the valid and out-of-range indices. No DSP, parameter IDs, presets, automation IDs, or serialized state changed.

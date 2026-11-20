@@ -1,6 +1,8 @@
-# Skell Key V56 — SkellCore/SkellWorld Tuning Sync
+# Skell Key V56 — Windows x64 VST3 Analyzer
 
-This is the **minimal build package** from V54. V55 builds on V54 with a more accurate key/tuning/tempo analysis and a redesigned skeleton-key UI. Key, chord, BPM and Reference A detection and priority drag-and-drop analysis are all retained.
+Skell Key is a JUCE 8.0.12 VST3 analyzer for musical key, chord, BPM and reference A tuning, with live-input and file-analysis modes. The current V56-era source includes the Bone-first skeleton-key UI and the SkellCore SEND TO TUNE integration. It is Windows x64 VST3 only; there is no standalone target.
+
+**Canonical engineering handoff:** [docs/README.md](docs/README.md) — project status, session history, accuracy baselines, architecture, SkellCore protocol, validation and the November 20 repository audit.
 
 ## Build on GitHub
 
@@ -14,16 +16,17 @@ CMake downloads JUCE 8.0.12 during configuration. For a local JUCE checkout, con
 
 The installable Windows VST3 package is uploaded only when the repository is private. This repository is public, so normal CI runs intentionally withhold the product ZIP and emit an explicit notice. Do not make the repository private or publish a release merely to obtain an artifact; use an owner-approved private testing channel.
 
-## Contents
+## Repository map
 
-- `Source/` — the 22 source and header files required by the plugin.
-- `CMakeLists.txt` — JUCE 8 CMake project, VST3 format.
-- `.github/workflows/build.yml` — Windows x64 GitHub Actions build and artifact packaging.
-- `.gitignore` — keeps build output out of source control.
+- `Source/` — plugin processor, editor, analyzer and reusable local DSP helpers.
+- `CMakeLists.txt` — JUCE 8 and pinned SkellCore VST3 build.
+- `tests/` — portable tuning, tonal-window and host-program regression tests.
+- `tools/` — strict VST3 moduleinfo normalizer used by release CI.
+- `Install-Skell-Key.ps1` and `scripts/` — optional private-preview install/update/rollback helper and its tests.
+- `docs/` — canonical handoff, accuracy history, architecture, validation and repository audit.
+- `.github/workflows/build.yml` — Windows x64 build, tests, metadata validation and private-preview packaging.
 
-## Excluded deliberately
-
-Historical benchmarks and logs, obsolete README/change files, old docs, standalone benchmark harnesses, Python training scripts, test files, generated artifacts, and the separate experimental model-training CI workflow. None is required to compile the VST3. Existing model-weight headers **are kept** because source headers depend on them, even though the learned model remains disabled until validated.
+The large GiantSteps audio files and the historical standalone `/home/claude/harness` are not stored in this repository. The benchmark results and exact missing inputs are documented under `docs/accuracy/`.
 
 ## What changed in V55
 
@@ -102,7 +105,7 @@ Key results are stable across 22.05 / 44.1 / 48 / 96 kHz; V54 flipped keys betwe
 **SEND TO TUNE** is the explicit sender trigger. The button toggles sharing on/off;
 no key, scale, or A4 is published by Skell Key before clicking it. Once enabled, the sender
 broadcasts the confirmed root, major/natural-minor mode, 12-note scale mask, and A4 reference
-(400–480 Hz) over the authenticated localhost SkellCore WorldLink. It continues to send updates
+(400–480 Hz) over SkellCore's Windows same-session shared-memory LocalTuningBus (with optional Hub transport for non-Windows fallback). It continues to send updates
 when the confirmed key or tuning changes, and periodically refreshes them for late receivers.
 An already-confirmed key is eligible to send immediately on click instead of waiting for a
 second four-second confirmation; unconfirmed live guesses remain suppressed. A4=440 Hz is
@@ -131,9 +134,7 @@ existing optional Hub transport remains the fallback.
 For future autotune/choir plugins, link the pinned `SkellCore::UI` CMake target, create
 `skellcore::world::WorldLink` on a non-audio-owned processor and, after user opt-in,
 read `latestMusicalTuning(skellcore::world::MusicalTuning&, uint32_t&)` on a JUCE timer. Copy
-snapshot values into lock-free state for the DSP callback. Only accept a valid trusted `skell.key`
-peer. The `musical.key` legacy topic carries root/mode only; the `musical.tuning` message also
-carries an absolute pitch-class mask and A4 as integer millihertz.
+snapshot values into lock-free state for the DSP callback. On the optional Hub transport, validate the registered `skell.key` peer before accepting events. The Windows shared-memory bus is same-user informational IPC, not an authentication boundary; do not treat it as trusted against other processes running as the same user. The `musical.key` legacy topic carries root/mode only; the `musical.tuning` message also carries an absolute pitch-class mask and A4 as integer millihertz.
 
 **Offline validation:** Set `SKELL_KEY_BUILD_SYNC_TESTS=ON` when configuring and run CTest.
 Builds pin SkellCore to immutable commit `4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d`.
