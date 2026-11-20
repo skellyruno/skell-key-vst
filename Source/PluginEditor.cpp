@@ -239,7 +239,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     theme = processor.getTheme(); applyTheme(theme);
     look = std::make_unique<SkellLookAndFeel>();
     look->themeIndex = &theme;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) {
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) {
         b->setLookAndFeel(look.get());
         addAndMakeVisible(b);
     }
@@ -250,6 +250,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
     lockButton.setTooltip("Scale lock: snap the notes you play to the detected scale");
     lockButton.onClick = [this] { processor.setScaleLock(lockButton.getToggleState()); };
     tagButton.setWantsKeyboardFocus(false);
+    tagButton.setComponentID("mini"); // match the compact controls and keep TAG legible at the default editor size
     tagButton.setTooltip("Add the key and tempo to file names (one file or a whole folder)");
     tagButton.onClick = [this] { showTagMenu(); };
     skinButton.setTooltip("Click the key to change the look  (now: " + juce::String(themes[theme].name) + ")");
@@ -257,7 +258,7 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
         theme = (theme + 1) % numThemes; processor.setTheme(theme); applyTheme(theme);
         skinButton.setButtonText(themes[theme].name);
         skinButton.setTooltip("Click the key to change the look  (now: " + juce::String(themes[theme].name) + ")");
-        for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->repaint();
+        for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) b->repaint();
         repaint();
     };
     skinButton.setButtonText(themes[theme].name);
@@ -323,14 +324,14 @@ TonicRecreationAudioProcessorEditor::TonicRecreationAudioProcessorEditor(TonicRe
 
 TonicRecreationAudioProcessorEditor::~TonicRecreationAudioProcessorEditor() {
     stopTimer();
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setLookAndFeel(nullptr);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) b->setLookAndFeel(nullptr);
     scene.reset();
     look.reset();
 }
 
 void TonicRecreationAudioProcessorEditor::showHelp(bool on) {
     helpShown = on;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(!on);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) b->setVisible(!on);
     if (scene != nullptr) scene->setVisible(!on);
     repaint();
 }
@@ -1024,12 +1025,12 @@ bool TonicRecreationAudioProcessorEditor::isInterestedInFileDrag(const juce::Str
 }
 void TonicRecreationAudioProcessorEditor::fileDragEnter(const juce::StringArray&, int, int) {
     dragHover = true;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(false);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) b->setVisible(false);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::fileDragExit(const juce::StringArray&) {
     dragHover = false;
-    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &lockButton }) b->setVisible(true);
+    for (auto* b : { &pauseButton, &resetButton, &openFileButton, &liveButton, &halfButton, &doubleButton, &helpButton, &skinButton, &tagButton, &lockButton }) b->setVisible(true);
     repaint();
 }
 void TonicRecreationAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int) {
