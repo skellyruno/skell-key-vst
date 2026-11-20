@@ -22,12 +22,9 @@ else()
     FetchContent_Declare(SkellCoreRepo
         GIT_REPOSITORY https://github.com/skellyruno/skellcore-vst-template.git
         GIT_TAG 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d
-        GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(SkellCoreRepo)
-    if(NOT skellcorerepo_POPULATED)
-        FetchContent_Populate(SkellCoreRepo)
-        add_subdirectory("${skellcorerepo_SOURCE_DIR}/SkellCore" "${CMAKE_CURRENT_BINARY_DIR}/SkellCore")
-    endif()
+        GIT_SHALLOW FALSE
+        SOURCE_SUBDIR SkellCore)
+    FetchContent_MakeAvailable(SkellCoreRepo)
 endif()
 
 juce_add_plugin(TonicRecreation
@@ -73,4 +70,7 @@ if(SKELL_KEY_BUILD_SYNC_TESTS)
     add_executable(SkellKeyTonalWindowTests tests/test_tonal_window.cpp)
     target_compile_features(SkellKeyTonalWindowTests PRIVATE cxx_std_17)
     add_test(NAME SkellKeyTonalWindowTests COMMAND SkellKeyTonalWindowTests)
+    add_executable(SkellKeyProgramInfoTests tests/test_program_info.cpp)
+    target_compile_features(SkellKeyProgramInfoTests PRIVATE cxx_std_17)
+    add_test(NAME SkellKeyProgramInfoTests COMMAND SkellKeyProgramInfoTests)
 endif()

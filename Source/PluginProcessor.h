@@ -14,6 +14,7 @@
 #include "TonalCenterModel.h"
 #include "TemporalTonalFeatures.h"
 #include "KeyTemporalConsensus.h"
+#include "ProgramInfo.h"
 #include <SkellCore/WorldLink.h>
 
 class TonicRecreationAudioProcessor final : public juce::AudioProcessor, private juce::Timer {
@@ -31,10 +32,10 @@ public:
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
-    int getNumPrograms() override { return 1; }
+    int getNumPrograms() override { return skellkey::host::programCount; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram(int) override {}
-    const juce::String getProgramName(int) override { return {}; }
+    const juce::String getProgramName(int index) override { return skellkey::host::programName(index); }
     void changeProgramName(int, const juce::String&) override {}
     void getStateInformation(juce::MemoryBlock&) override;
     void setStateInformation(const void*, int) override;

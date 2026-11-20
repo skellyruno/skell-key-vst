@@ -1,0 +1,27 @@
+THIRD-PARTY / LICENSING STATUS — SKELL KEY PRIVATE PREVIEW
+============================================================
+
+This file records provenance and unresolved review items. It is not a license
+grant, legal opinion, or substitute for upstream license and attribution files.
+
+JUCE
+- Build dependency: JUCE 8.0.12, fetched from the official JUCE repository.
+- Upstream: https://github.com/juce-framework/JUCE
+- Review the exact license terms that apply to the chosen JUCE distribution
+  before redistributing binaries or source.
+
+SKELLCORE
+- Source repository: https://github.com/skellyruno/skellcore-vst-template
+- CMakeLists.txt pins SkellCore to commit:
+  4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d
+- Review the pinned source tree's license and attribution notices before
+  commercial distribution. This package does not assert a license for it.
+
+SKELL KEY PRODUCT
+- No approved product LICENSE/COPYING grant is included in this preview.
+- No vendor URL or support email is populated in the VST3 metadata.
+- The owner must approve the product license, third-party notices, vendor URL
+  and support contact before any public or commercial distribution.
+
+Do not remove this notice or treat this private preview as permission to
+redistribute, sublicense, sell or bundle the product.

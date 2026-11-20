@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-vst3:
@@ -15,6 +15,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Set up Python for release metadata checks
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - name: Configure CMake (JUCE fetched automatically)
         run: cmake -S . -B build -A x64 -DSKELL_KEY_BUILD_SYNC_TESTS=ON
@@ -25,18 +30,249 @@ jobs:
       - name: Run tuning sync tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Package VST3
+      - name: Test strict VST3 moduleinfo normalizer
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Stage one-level Windows VST3 bundle and provenance
         shell: pwsh
+        env:
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $plugins = @(Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' |
               Where-Object { $_.Name -eq 'Skell Key.vst3' })
           if ($plugins.Count -ne 1) { throw "Expected one Skell Key VST3, found $($plugins.Count)" }
-          Compress-Archive -LiteralPath $plugins[0].FullName -DestinationPath Skell-Key-Windows-VST3.zip -Force
 
-      - name: Upload VST3 artifact
+          $bundle = $plugins[0]
+          $binary = Join-Path $bundle.FullName 'Contents/x86_64-win/Skell Key.vst3'
+          $moduleInfo = Join-Path $bundle.FullName 'Contents/Resources/moduleinfo.json'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "Missing expected Windows x64 VST3 binary: $binary"
+          }
+          if (-not (Test-Path -LiteralPath $moduleInfo -PathType Leaf)) {
+            throw "Missing VST3 moduleinfo.json: $moduleInfo"
+          }
+
+          $bytes = [System.IO.File]::ReadAllBytes($binary)
+          if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "VST3 binary is not a valid MZ executable"
+          }
+          $offset = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ($offset -lt 0 -or ($offset + 26) -gt $bytes.Length) {
+            throw "Invalid PE header offset"
+          }
+          if ([Text.Encoding]::ASCII.GetString($bytes, $offset, 4) -ne "PE`0`0") {
+            throw "Missing PE signature"
+          }
+          if ([BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) {
+            throw "VST3 binary is not x64"
+          }
+          if ([BitConverter]::ToUInt16($bytes, $offset + 24) -ne 0x20B) {
+            throw "VST3 binary is not PE32+"
+          }
+
+          $moduleInfoText = Get-Content -LiteralPath $moduleInfo -Raw
+          if ($moduleInfoText -notmatch '"Name"\s*:\s*"Skell Key"') {
+            throw "VST3 module metadata does not identify Skell Key"
+          }
+          $versionMatch = [regex]::Match($moduleInfoText, '"Version"\s*:\s*"([^"]+)"')
+          if (-not $versionMatch.Success) {
+            throw "VST3 module metadata has no product version"
+          }
+          $version = $versionMatch.Groups[1].Value
+          $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceModuleInfoHash = (Get-FileHash -LiteralPath $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $stage = Join-Path $PWD 'release-stage'
+          if (Test-Path -LiteralPath $stage) {
+            throw "Refusing to overwrite existing release-stage directory: $stage"
+          }
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          $stagedBundle = Join-Path $stage $bundle.Name
+          Copy-Item -LiteralPath $bundle.FullName -Destination $stagedBundle -Recurse
+
+          $moduleInfoManifest = Join-Path $stage 'Skell-Key-moduleinfo-verification.json'
+          python tools/normalize_vst3_moduleinfo.py --bundle "$stagedBundle" --product "Skell Key" --vendor "Skell Audio" --manifest-out "$moduleInfoManifest"
+          if ($LASTEXITCODE -ne 0) { throw "Strict VST3 moduleinfo verification failed ($LASTEXITCODE)" }
+          $moduleInfoVerification = Get-Content -LiteralPath $moduleInfoManifest -Raw | ConvertFrom-Json
+          if ($moduleInfoVerification.source_moduleinfo_sha256 -ne $sourceModuleInfoHash) {
+            throw "Staged moduleinfo source hash does not match the original build bundle"
+          }
+          $stagedModuleInfo = Join-Path $stagedBundle 'Contents/Resources/moduleinfo.json'
+          $stagedModuleInfoHash = (Get-FileHash -LiteralPath $stagedModuleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($moduleInfoVerification.staged_moduleinfo_sha256 -ne $stagedModuleInfoHash) {
+            throw "Staged moduleinfo hash does not match its verification manifest"
+          }
+
+          $stagedBinary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Key.vst3'
+          if (-not (Test-Path -LiteralPath $stagedBinary -PathType Leaf)) {
+            throw "Staged VST3 binary is missing"
+          }
+          $stagedBinaries = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.vst3')
+          if ($stagedBinaries.Count -ne 1 -or $stagedBinaries[0].FullName -ne $stagedBinary) {
+            throw "Staged package must contain exactly one Windows VST3 binary"
+          }
+
+          "$binaryHash  Skell Key.vst3/Contents/x86_64-win/Skell Key.vst3" |
+            Set-Content -LiteralPath (Join-Path $stage 'Skell-Key-Windows-VST3.sha256') -Encoding ascii
+          @(
+            'Product: Skell Key'
+            "Version: $version"
+            'Format: VST3'
+            'Platform: Windows x86_64'
+            "Source head commit: $env:SOURCE_HEAD_SHA"
+            "Tested workflow commit: $env:GITHUB_SHA"
+            "Workflow run ID: $env:GITHUB_RUN_ID"
+            'Bundle: Skell Key.vst3'
+            'Binary: Contents/x86_64-win/Skell Key.vst3'
+            "Binary SHA-256: $binaryHash"
+            "Moduleinfo source SHA-256: $sourceModuleInfoHash"
+            "Moduleinfo staged SHA-256: $stagedModuleInfoHash"
+            "Moduleinfo rewritten: $($moduleInfoVerification.rewritten)"
+            "JUCE trailing commas removed: $($moduleInfoVerification.trailing_commas_removed)"
+            "VST3 class IDs: $($moduleInfoVerification.class_ids -join ', ')"
+            "Missing contact fields: $($moduleInfoVerification.missing_contact_fields -join ', ')"
+          ) | Set-Content -LiteralPath (Join-Path $stage 'Skell-Key-Windows-VST3-manifest.txt') -Encoding utf8
+
+          Write-Host "Staged bundle: $stagedBundle"
+          Write-Host "Product version: $version"
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Assemble checksummed private-preview install package
+        shell: pwsh
+        env:
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $PWD 'release-stage'
+          $moduleInfo = Join-Path $stage 'Skell Key.vst3/Contents/Resources/moduleinfo.json'
+          $info = Get-Content -LiteralPath $moduleInfo -Raw | ConvertFrom-Json
+          $buildInfo = [ordered]@{
+            schema_version = 1
+            product = 'Skell Key'
+            version = [string]$info.Version
+            format = 'VST3'
+            platform = 'Windows x86_64'
+            release_status = 'preview-only; not a commercial release'
+            source_head_sha = $env:SOURCE_HEAD_SHA
+            tested_workflow_sha = $env:GITHUB_SHA
+            workflow_run_id = $env:GITHUB_RUN_ID
+          }
+          $buildInfo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'build-info.json') -Encoding utf8
+          @(
+            'release_status: preview-only; not a commercial release.'
+            'Windows x64 VST3 only. Not signed; no administrator rights required.'
+            'Run Install-Skell-Key.ps1 with -WhatIf before installing.'
+            'See INSTALL-WINDOWS.txt and THIRD-PARTY-NOTICES.txt.'
+          ) | Set-Content -LiteralPath (Join-Path $stage 'PREVIEW-ONLY.txt') -Encoding ascii
+          Copy-Item -LiteralPath 'Install-Skell-Key.ps1' -Destination $stage
+          Copy-Item -LiteralPath 'INSTALL-WINDOWS.txt' -Destination $stage
+          Copy-Item -LiteralPath 'RELEASE-NOTES.txt' -Destination $stage
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.txt' -Destination $stage
+
+          $toolFiles = @('Install-Skell-Key.ps1','INSTALL-WINDOWS.txt','THIRD-PARTY-NOTICES.txt')
+          $excluded = @('SHA256SUMS.txt','TOOLS-SHA256SUMS.txt') + $toolFiles
+          $distRoot = (Resolve-Path -LiteralPath $stage).Path
+          $mainSums = foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File -Force | Sort-Object FullName) {
+            $relative = $file.FullName.Substring($distRoot.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+            if ($relative -notin $excluded) {
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            }
+          }
+          $mainSums | Set-Content -LiteralPath (Join-Path $stage 'SHA256SUMS.txt') -Encoding ascii
+
+          $toolSums = foreach ($relative in $toolFiles) {
+            $path = Join-Path $stage $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing preview tool: $relative" }
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $relative"
+          }
+          $toolSums | Set-Content -LiteralPath (Join-Path $stage 'TOOLS-SHA256SUMS.txt') -Encoding ascii
+
+      - name: Test private-preview install, update and rollback
+        shell: pwsh
+        run: ./scripts/Test-Install-Skell-Key.ps1 -PackageRoot release-stage -TestRoot "$env:RUNNER_TEMP/Skell-Key-Install-Test"
+
+      - name: Install pinned pluginval 1.0.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip'
+          Invoke-WebRequest -Uri $url -OutFile pluginval_Windows.zip
+          Expand-Archive -LiteralPath pluginval_Windows.zip -DestinationPath pluginval -Force
+          $validator = Get-ChildItem -LiteralPath pluginval -Recurse -File -Filter 'pluginval.exe' |
+            Select-Object -First 1
+          if (-not $validator) { throw 'Official pluginval 1.0.4 Windows executable was not found' }
+          "PLUGINVAL_EXE=$($validator.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate staged Skell Key VST3 (strictness 5)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path (Join-Path $PWD 'release-stage') 'Skell Key.vst3'
+          if (-not (Test-Path -LiteralPath $bundle -PathType Container)) {
+            throw "Staged VST3 bundle missing: $bundle"
+          }
+          $reportDir = Join-Path $PWD 'pluginval-reports'
+          New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+          # pluginval 1.0.4 is a Windows GUI-subsystem executable. Invoke it
+          # through Start-Process so PowerShell receives the real process exit
+          # code instead of an empty $LASTEXITCODE (which falsely fails a
+          # successful validation on Windows runners).
+          $stdoutPath = Join-Path $reportDir 'pluginval.stdout.log'
+          $stderrPath = Join-Path $reportDir 'pluginval.stderr.log'
+          $argumentLine = '--strictness-level 5 --validate-in-process --output-dir "{0}" "{1}"' -f $reportDir, $bundle
+          $process = Start-Process -FilePath $env:PLUGINVAL_EXE -ArgumentList $argumentLine -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+          if (Test-Path -LiteralPath $stdoutPath) {
+            Get-Content -LiteralPath $stdoutPath | ForEach-Object { Write-Host $_ }
+          }
+          if (Test-Path -LiteralPath $stderrPath) {
+            Get-Content -LiteralPath $stderrPath | ForEach-Object { Write-Host $_ }
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "pluginval strictness 5 failed with process exit code $($process.ExitCode)"
+          }
+
+          $reports = @(Get-ChildItem -LiteralPath $reportDir -File -Filter '*.txt')
+          if ($reports.Count -ne 1) {
+            throw "Expected exactly one pluginval text report, found $($reports.Count)"
+          }
+          $reportText = Get-Content -LiteralPath $reports[0].FullName -Raw
+          $reportEnd = $reportText.Trim()
+          if (-not $reportEnd.EndsWith('SUCCESS') -or $reportText.Contains('FAILURE')) {
+            throw "pluginval report does not contain a clean final SUCCESS marker"
+          }
+
+      - name: Upload pluginval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Skell-Key-pluginval-report
+          path: pluginval-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Withhold installable preview artifact from public repositories
+        if: ${{ github.event.repository.private != true }}
+        shell: pwsh
+        run: |
+          Write-Host "::notice::Installable Skell Key preview artifact withheld because this repository is public. Build and validation still run; use an owner-controlled private distribution location for user testing."
+          @(
+            "## Installable preview withheld"
+            ""
+            "This repository is public, so the installable Skell Key VST3 package was deliberately not uploaded."
+            "Windows build, installer/update/rollback checks and pluginval validation still ran."
+            "No public release or private distribution location was created."
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload one-level installable VST3 bundle
+        if: ${{ github.event.repository.private == true }}
         uses: actions/upload-artifact@v6
         with:
           name: Skell-Key-Windows-VST3
-          path: Skell-Key-Windows-VST3.zip
+          path: release-stage/**
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30

@@ -1,0 +1,31 @@
+SKELL KEY 0.1.0 — WINDOWS VST3 PRIVATE PREVIEW
+================================================
+
+DELIVERY
+- Windows x64 VST3 only; no standalone target.
+- One top-level Skell Key.vst3 bundle, one AMD64 PE32+ module.
+- Strict normalized moduleinfo.json with processor/controller class IDs.
+- Build provenance, binary SHA-256, moduleinfo hashes and full package checksums.
+- Optional per-user PowerShell install/update/rollback helper.
+- Preview artifact retention: 30 days.
+
+CURRENT PRODUCT NOTES
+Skell Key analyzes key, chord, tempo and reference tuning. It includes the
+SkellCore key/scale/A4 sender and supports the explicit SEND TO TUNE opt-in.
+The package is intended for private testing with SkellyTune Mini.
+
+QUALITY STATUS
+The parent PR exact-head Windows CI run #44041085916 passed CMake configure,
+Release VST3 compilation, tuning-sync CTests 2/2, 12 strict metadata tests,
+package staging, pluginval 1.0.4 strictness 5 and artifact upload. This is CI
+evidence, not FL Studio acceptance.
+
+FL Studio scan/load, two-plugin tuning sync, parameter/state/automation recall,
+old-project compatibility, musical A/B and target-hardware CPU/latency have
+not been accepted in a real user session. Accuracy figures in the README are
+based on rendered public scores and generated loops, not a guarantee for
+commercial recordings.
+
+Commercial distribution is blocked pending approved product licensing,
+third-party license review, vendor URL and support contact. No price or trial
+terms are included in this preview.
