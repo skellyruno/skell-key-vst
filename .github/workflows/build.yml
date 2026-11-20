@@ -31,7 +31,7 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Test strict VST3 moduleinfo normalizer
-        run: python -m unittest discover -s tests -p "test_moduleinfo_normalizer.py" -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Stage one-level Windows VST3 bundle and provenance
         shell: pwsh
@@ -255,7 +255,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Withhold installable preview artifact from public repositories
+        if: ${{ github.event.repository.private != true }}
+        shell: pwsh
+        run: |
+          Write-Host "::notice::Installable Skell Key preview artifact withheld because this repository is public. Build and validation still run; use an owner-controlled private distribution location for user testing."
+          @(
+            "## Installable preview withheld"
+            ""
+            "This repository is public, so the installable Skell Key VST3 package was deliberately not uploaded."
+            "Windows build, installer/update/rollback checks and pluginval validation still ran."
+            "No public release or private distribution location was created."
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
       - name: Upload one-level installable VST3 bundle
+        if: ${{ github.event.repository.private == true }}
         uses: actions/upload-artifact@v6
         with:
           name: Skell-Key-Windows-VST3

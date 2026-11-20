@@ -6,9 +6,13 @@ This is the **minimal build package** from V54. V55 builds on V54 with a more ac
 
 1. Put **the contents of this ZIP directly in the repository root**, not inside an additional folder. Make sure `.github/workflows/build.yml` is committed.
 2. Open **Actions → Build Skell Key Windows VST3 → Run workflow**, or push to `main`.
-3. After a successful build, download `Skell-Key-Windows-VST3` from the workflow's Artifacts section.
+3. On a **private repository** run, download `Skell-Key-Windows-VST3` from the workflow's Artifacts section. Public-repository runs deliberately withhold the installable ZIP while continuing Windows build, installer and pluginval validation. The separate pluginval report is diagnostic-only, not an installable product.
 
 CMake downloads JUCE 8.0.12 during configuration. For a local JUCE checkout, configure with `-DJUCE_PATH=/path/to/JUCE` instead.
+
+### Private-preview distribution boundary
+
+The installable Windows VST3 package is uploaded only when the repository is private. This repository is public, so normal CI runs intentionally withhold the product ZIP and emit an explicit notice. Do not make the repository private or publish a release merely to obtain an artifact; use an owner-approved private testing channel.
 
 ## Contents
 
