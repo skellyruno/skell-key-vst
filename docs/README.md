@@ -6,10 +6,11 @@ This folder is the canonical engineering handoff for Skell Key. It consolidates 
 
 1. **[Project handoff](handoff/PROJECT_HANDOFF.md)** — current product state, preserved behavior, architecture summary, integration status and next actions.
 2. **[Session history](handoff/SESSION_HISTORY.md)** — V54 → V55 → V56 milestones and decisions recovered from the earlier conversation export.
-3. **[Accuracy baselines and roadmap](accuracy/BASELINES_AND_ROADMAP.md)** — measured datasets, accepted/rejected experiments, unresolved key/BPM errors and the next holdout test.
-4. **[Analysis and SkellCore sync](architecture/ANALYSIS_AND_SYNC.md)** — worker/audio-thread split, key/tempo/tuning pipeline, SEND TO TUNE packet and receiver requirements.
-5. **[Validation matrix](testing/VALIDATION_MATRIX.md)** — what has passed, where it passed, and what is still unverified.
-6. **[Repository audit](REPO_AUDIT_2026-11-20.md)** — PR-stack consolidation, the pluginval false-failure root cause, installer/release changes and excluded TAG-button change.
+3. **[V56 technical details](handoff/V56_TECHNICAL_DETAILS.md)** — exact DSP settings, confidence/state fields, UI interactions and the historical test-harness layout.
+4. **[Accuracy baselines and roadmap](accuracy/BASELINES_AND_ROADMAP.md)** — measured datasets, accepted/rejected experiments, unresolved key/BPM errors and the next holdout test.
+5. **[Analysis and SkellCore sync](architecture/ANALYSIS_AND_SYNC.md)** — worker/audio-thread split, key/tempo/tuning pipeline, SEND TO TUNE packet and receiver requirements.
+6. **[Validation matrix](testing/VALIDATION_MATRIX.md)** — what has passed, where it passed, and what is still unverified.
+7. **[Repository audit](REPO_AUDIT_2026-11-20.md)** — PR-stack consolidation, the pluginval false-failure root cause, installer/release changes and excluded TAG-button change.
 
 ## Evidence rules
 
