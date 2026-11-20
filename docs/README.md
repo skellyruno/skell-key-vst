@@ -23,7 +23,7 @@ This folder is the canonical engineering handoff for Skell Key. It consolidates 
 ## Source records used
 
 - User-supplied “Skell Key – handoff summary” in the November 20, 2026 conversation.
-- User-uploaded conversation export: Claude_Music key and BPM detection_2026-11-12T16-04.md (4,060 lines, 142,542 bytes; uploaded November 12, 2026). This repository stores a curated engineering history rather than the full conversational transcript.
+- User-uploaded conversation export: Claude_Music key and BPM detection_2026-11-12T16-04.md (uploaded November 12, 2026). This repository stores a curated engineering history rather than the full conversational transcript.
 - GitHub source and CI state inspected November 20, 2026, including main at b66c5999 and the verified release-stack head 60843d5.
 - Repository AGENTS.md and shared SkellWorld development / Quick4 guidance.
 
