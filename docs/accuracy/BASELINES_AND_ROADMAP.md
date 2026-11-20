@@ -19,14 +19,14 @@
 | Benchmark | V54 / early baseline | V55 | V56 / final handoff |
 |---|---:|---:|---:|
 | Rendered real-composition exact key | 54/150 (36%) | 110/150 (73%) | 118/150 (78.7%) |
-| Rendered real-composition tempo within 3% | 120/134 | 124/134 | 126/134 |
-| Rendered real-composition mean tuning error | 5.2 cents | 0.1 cents | 0.1 cents reported |
+| Rendered real-composition tempo within 3% | 120/134 | 124/134 | Not reported in final handoff |
+| Rendered real-composition mean tuning error | 5.2 cents | 0.1 cents | Not reported in final handoff |
 | Synthetic exact key | 69/288 | 223/288 | 225/288 |
-| Synthetic exact tempo | 10/263 | 34/263 | 34/263 reported |
+| Synthetic exact tempo | 10/263 | 34/263 | Not reported in final handoff |
 | GiantSteps+ exact key | not scored | 41/67 before tie-break | 49/67 after tie-break |
 | GiantSteps+ tempo match | not scored | — | 48/60 labelled tracks |
 
-The final GiantSteps+ key score is 49/67 (73.1%). An interim experiment briefly reported 50/67; the final fixed-constant tie-break and handoff settle on 49/67. Use 49/67 as the shipped baseline.
+The final GiantSteps+ key score is 49/67 (73.1%). An interim experiment briefly reported 50/67; the final fixed-constant tie-break and handoff settle on 49/67. Use 49/67 as the shipped baseline. The final V56 handoff does not report an updated real-composition tempo score, synthetic tempo score or mean tuning error; do not carry the V55 figures forward as if they were remeasured in V56.
 
 ## GiantSteps+ corpus and scoring notes
 
