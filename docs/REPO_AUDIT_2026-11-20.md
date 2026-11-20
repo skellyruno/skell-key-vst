@@ -41,7 +41,7 @@ The PR #8 log shows pluginval completing all listed tests and printing final SUC
 - Installer tests use a newly created, token-marked temporary root. They refuse to claim an existing directory for cleanup and test junction/reparse-point rejection.
 - Public repository runs deliberately skip upload of the installable preview ZIP. The pluginval report is a separate diagnostic-only artifact.
 
-The final PR #15 run recorded 33 installer assertions, 18 Python tests, 3 CTests and pluginval strictness 5 SUCCESS. This does not prove installation or scanning in FL Studio.
+The final PR #15 run recorded 33 installer assertions, 18 Python tests, 3 CTests and pluginval strictness 5 SUCCESS. The exact job log reports binary SHA-256 bcd7c712bae8ccb823a490fb2c7ea0c8338f99bf77caef6cf16bb489575ab432; the PR description had a different hash, so the job log is treated as the authoritative record. This does not prove installation or scanning in FL Studio.
 
 ## Additional source/documentation issues corrected in the consolidated handoff
 

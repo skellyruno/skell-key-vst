@@ -21,7 +21,7 @@ The key estimator combines:
 - SHS note salience and tonal harmonic evidence.
 - Bass, phrase, beat, downbeat and relative-mode evidence.
 - Temporal key consensus.
-- File-mode opening/closing tonic-triad evidence (not applied to live mode).
+- File-mode opening/closing tonic-triad evidence (not applied to live mode). Current source computes 0.5 times the average of the opening/closing tonic-triad cosine matches; live analysis receives no boundary bonus.
 - The narrow same-root parallel-mode tie-break described in the accuracy document.
 
 The final parallel tie-break is deliberately not a blanket minor prior. It only acts when the major/minor third evidence is ambiguous and the same-root minor candidate is already close to the leader.
@@ -58,7 +58,7 @@ The DC-only false-key correction is isolated to the tonal analysis window:
 
 ## SkellCore protocol and transport
 
-The SkellCore dependency is pinned in CMake to commit 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d from skellyruno/skellcore-vst-template. The pin includes:
+The SkellCore dependency is pinned in CMake to commit 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d from skellyruno/skellcore-vst-template. The Windows LocalTuningBus default mapping name is Local\\SkellCore.MusicalTuning.v1. The pin includes:
 - WorldTuning.h: validated MusicalTuning snapshot and wire format.
 - LocalTuningBus.h: Windows same-session shared-memory transport.
 - WorldLink.h: optional Hub transport for legacy/informational SW1 topics and a wrapper around local tuning publication/reading.

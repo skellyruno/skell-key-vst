@@ -47,7 +47,7 @@ The recorded run passed:
 - pluginval 1.0.4 strictness 5 with final SUCCESS.
 - Public-repository withholding notice; installable product ZIP upload was skipped.
 
-The recorded Windows module SHA-256 was e58dac3d456cd895f8d2cf369d8cc41cf31a0a72fdf2d74fda6eb02342857b7a. The diagnostic-only pluginval artifact contained logs/report, not the VST3. This run is release-stack CI evidence, not a stable release or a real host test.
+The exact run log records the Windows module SHA-256 as bcd7c712bae8ccb823a490fb2c7ea0c8338f99bf77caef6cf16bb489575ab432. This supersedes the different hash copied into the original PR #15 description. The diagnostic-only pluginval artifact contained logs/report, not the VST3. This run is release-stack CI evidence, not a stable release or a real host test.
 
 ## Still required before beta/release
 

@@ -45,7 +45,7 @@ The release/installer stack changes build, metadata validation, packaging and in
 These are non-negotiable regression anchors:
 
 - **Malta type beat:** B major, 150 BPM, A ≈ 450.8 Hz. All 20 trimmed cuts in the recorded handoff read B major / 150 BPM.
-- **Maajins type beat:** 156 BPM (the handoff records approximately 156.06 BPM). Its key is not settled: the user considered A major, E minor and D major; the analyzer's D-major result had very low confidence. Do not turn D major into ground truth.
+- **Maajins type beat:** 156 BPM (the handoff records approximately 156.06 BPM). Its key is not settled: the user considered A major, E minor and D major; the analyzer's D-major result had about 9% confidence in the latest handoff (an earlier session recorded an even lower value). Do not turn D major into ground truth.
 - The final reported GiantSteps+ result is 49/67 exact keys after the parallel-mode tie-break. The earlier 50/67 was an interim experiment, not the final fixed-constant result.
 - The older real-composition set is 118/150; synthetic sets a–f are 225/288. These are historical results and must be rerun before claiming a new accuracy gain.
 
