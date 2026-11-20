@@ -22,12 +22,9 @@ else()
     FetchContent_Declare(SkellCoreRepo
         GIT_REPOSITORY https://github.com/skellyruno/skellcore-vst-template.git
         GIT_TAG 4c499c58cb3b2791eed2d5dcef6d8d543fcaea8d
-        GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(SkellCoreRepo)
-    if(NOT skellcorerepo_POPULATED)
-        FetchContent_Populate(SkellCoreRepo)
-        add_subdirectory("${skellcorerepo_SOURCE_DIR}/SkellCore" "${CMAKE_CURRENT_BINARY_DIR}/SkellCore")
-    endif()
+        GIT_SHALLOW FALSE
+        SOURCE_SUBDIR SkellCore)
+    FetchContent_MakeAvailable(SkellCoreRepo)
 endif()
 
 juce_add_plugin(TonicRecreation
