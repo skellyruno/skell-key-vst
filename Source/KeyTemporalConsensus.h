@@ -14,27 +14,32 @@ class KeyTemporalConsensus {
 public:
     struct Decision { int root=-1, mode=2; float longFit=0; int phraseHits=0; };
     void prepare(double rate, int hop) noexcept {
-        capacity_ = std::clamp(static_cast<int>(std::lround(40.0*rate/std::max(hop,1))), 1,512);
-        minimum_ = std::max(1,static_cast<int>(std::lround(24.0*rate/std::max(hop,1))));
+        const double fs=std::isfinite(rate)?std::clamp(rate,8000.,384000.):48000.;
+        const double framesPerSecond=fs/std::max(hop,1);
+        // Aggregate consecutive normalized observations before entering the
+        // fixed ring. At 96/192k the old minimum could exceed its capacity.
+        group_=std::max(1,static_cast<int>(std::ceil(40.*framesPerSecond/512.)));
+        capacity_=std::clamp(static_cast<int>(std::lround(40.*framesPerSecond/group_)),1,512);
+        minimum_=std::clamp(static_cast<int>(std::lround(24.*framesPerSecond/group_)),1,capacity_);
         reset();
     }
-    void reset() noexcept { sums_.fill(0);write_=count_=0; }
+    void reset() noexcept { sums_.fill(0);pending_.fill(0);write_=count_=pendingCount_=0; }
     void observe(const std::array<float,12>& chroma) noexcept {
+        float mass=0;
+        for(float v:chroma)mass+=std::isfinite(v)?std::max(0.f,v):0.f;
+        if(std::isfinite(mass)&&mass>=1.0e-12f){
+            for(int i=0;i<12;++i)pending_[static_cast<std::size_t>(i)]+=std::max(0.f,std::isfinite(chroma[static_cast<std::size_t>(i)])?chroma[static_cast<std::size_t>(i)]:0.f)/mass;
+        }else if(!std::isfinite(mass)){
+            double wide=0.;for(float v:chroma)if(std::isfinite(v))wide+=std::max(0.f,v);
+            for(int i=0;i<12;++i){float v=chroma[static_cast<std::size_t>(i)];if(std::isfinite(v)&&wide>0.)pending_[static_cast<std::size_t>(i)]+=static_cast<float>(std::max(0.f,v)/wide);}
+        }
+        if(++pendingCount_<group_)return;
         const std::size_t slot=static_cast<std::size_t>(write_);
         if(count_==capacity_)
             for(int i=0;i<12;++i)sums_[static_cast<std::size_t>(i)]-=frames_[slot][static_cast<std::size_t>(i)];
         else ++count_;
-        float mass=0;
-        for(float v:chroma)mass+=std::isfinite(v)?std::max(0.f,v):0.f;
-        if(mass < 1.0e-12f) { // The caller normally skips silence; never admit NaN.
-            for(int i=0;i<12;++i)frames_[slot][static_cast<std::size_t>(i)]=0;
-        } else {
-            for(int i=0;i<12;++i)
-                frames_[slot][static_cast<std::size_t>(i)]=
-                    std::max(0.f,std::isfinite(chroma[static_cast<std::size_t>(i)])?chroma[static_cast<std::size_t>(i)]:0.f)/mass;
-        }
-        for(int i=0;i<12;++i)sums_[static_cast<std::size_t>(i)]+=frames_[slot][static_cast<std::size_t>(i)];
-        write_=(write_+1)%capacity_;
+        for(int i=0;i<12;++i){const auto j=static_cast<std::size_t>(i);frames_[slot][j]=pending_[j]/static_cast<float>(group_);sums_[j]+=frames_[slot][j];}
+        pending_.fill(0);pendingCount_=0;write_=(write_+1)%capacity_;
     }
     template<class PhraseTracker>
     Decision propose(int rawRoot,int rawMode,const PhraseTracker& phrases,
@@ -65,10 +70,11 @@ public:
         // Mode still comes entirely from the independently measured chroma fit.
         return {topRoot,topMode,top,preferredCount};
     }
+    // Number of completed stored groups, identical to the old count when group=1.
     int observedFrames() const noexcept { return count_; }
 private:
     std::array<std::array<float,12>,512> frames_{};
-    std::array<float,12> sums_{};
-    int capacity_=512,minimum_=270,write_=0,count_=0;
+    std::array<float,12> sums_{},pending_{};
+    int capacity_=512,minimum_=270,write_=0,count_=0,group_=1,pendingCount_=0;
 };
 }
